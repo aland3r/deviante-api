@@ -12,6 +12,22 @@ application {
     mainClass = "io.ktor.server.netty.EngineMain"
 }
 
+afterEvaluate {
+    tasks.named<JavaExec>("run") {
+        val dotenv = file(".env")
+        if (dotenv.exists()) {
+            dotenv.readLines()
+                .map { it.trim() }
+                .filter { it.isNotEmpty() && !it.startsWith("#") }
+                .mapNotNull { line ->
+                    val idx = line.indexOf('=')
+                    if (idx <= 0) null else line.substring(0, idx).trim() to line.substring(idx + 1).trim()
+                }
+                .forEach { (key, value) -> environment(key, value) }
+        }
+    }
+}
+
 kotlin {
     jvmToolchain(21)
 }
@@ -23,6 +39,11 @@ dependencies {
     implementation(ktorLibs.server.cors)
     implementation(ktorLibs.server.netty)
     implementation(libs.logback.classic)
+    implementation(libs.exposed.core)
+    implementation(libs.exposed.jdbc)
+    implementation(libs.exposed.java.time)
+    implementation(libs.hikaricp)
+    implementation(libs.postgresql)
 
     testImplementation(kotlin("test"))
     testImplementation(ktorLibs.server.testHost)

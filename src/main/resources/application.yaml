@@ -5,4 +5,10 @@ ktor:
     modules:
       - com.deviante.HttpKt.configureHttp
       - com.deviante.SerializationKt.configureSerialization
+      - com.deviante.DatabaseKt.configureDatabase
       - com.deviante.RoutingKt.configureRouting
+
+database:
+  jdbcUrl: ${DATABASE_JDBC_URL:jdbc:postgresql://localhost:5432/postgres?sslmode=require}
+  user: ${DATABASE_USER:postgres}
+  password: ${DATABASE_PASSWORD:}
