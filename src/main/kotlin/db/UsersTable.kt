@@ -8,7 +8,7 @@ object UsersTable : Table(name = "users") {
 
     val id = uuid("id")
     val email = varchar("email", 255)
-    val passwordHash = varchar("password_hash", 255)
+    val passwordHash = varchar("password_hash", 255).nullable()
     val createdAt = timestampWithTimeZone("created_at")
     val updatedAt = timestampWithTimeZone("updated_at")
 

@@ -32,10 +32,17 @@ class UserRepository {
 
     fun existsByEmail(email: String): Boolean = findByEmail(email) != null
 
-    fun insert(email: String, passwordHash: String): UserRecord = transaction {
+    fun insert(email: String, passwordHash: String): UserRecord =
+        insertWithId(UUID.randomUUID(), email, passwordHash)
+
+    /**
+     * Inserts a row whose id matches an existing Supabase Auth user (OAuth
+     * first-login) — [passwordHash] stays null since Supabase Auth owns
+     * credentials for that user.
+     */
+    fun insertWithId(id: UUID, email: String, passwordHash: String?): UserRecord = transaction {
         val now = OffsetDateTime.now()
         val normalizedEmail = email.trim().lowercase()
-        val id = UUID.randomUUID()
 
         UsersTable.insert {
             it[UsersTable.id] = id
