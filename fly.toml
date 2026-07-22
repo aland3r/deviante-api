@@ -1,39 +1,36 @@
-# Fly.io deployment config for Deviante API (Kotlin + Ktor)
 app = "deviante-api"
 primary_region = "sa-east-1"
 
 [build]
   image = "eclipse-temurin:21-jdk"
 
-[env]
-  # Application configuration
-  DATABASE_JDBC_URL = "postgresql://db.ydjtrcjxhtmygytmebrk.supabase.co:5432/postgres"
-  KTOR_ENVIRONMENT = "production"
+[[services]]
+  protocol = "tcp"
+  internal_port = 8080
+  processes = ["api"]
 
-[services]
   [[services.ports]]
+    port = 80
     handlers = ["http"]
-    port = 8080
-    force_https = false
+    force_https = true
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+    force_https = true
 
   [services.concurrency]
     type = "requests"
     hard_limit = 25
     soft_limit = 20
 
-  [[services.tcp_checks]]
-    grace_period = "5s"
-    interval = "15s"
-    timeout = "2s"
-    port = 8080
+[processes]
+  api = "./gradlew run"
 
 [checks]
   [checks.status]
     type = "http"
-    port = 8080
     interval = "15s"
     timeout = "5s"
+    grace_period = "10s"
     path = "/ping"
-
-[processes]
-  api = "./gradlew run"
