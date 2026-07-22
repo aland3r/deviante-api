@@ -1,10 +1,17 @@
 package com.deviante
 
+import com.deviante.dto.CreateActivityRequest
+import com.deviante.dto.CreateOperationRequest
 import com.deviante.dto.ErrorResponse
+import com.deviante.dto.MapOperationRequest
+import com.deviante.dto.UpdateActivityRequest
 import com.deviante.dto.UpdateManagerRequest
 import com.deviante.dto.UpdateProcessRequest
 import com.deviante.dto.toResponse
+import com.deviante.model.OperationRecord
+import com.deviante.repository.ActivitiesRepository
 import com.deviante.repository.ManagerRepository
+import com.deviante.repository.OperationsRepository
 import com.deviante.repository.ProcessRepository
 import io.ktor.http.*
 import io.ktor.server.application.*
@@ -12,8 +19,6 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import java.util.UUID
-
-private val LANGUAGE_PATTERN = Regex("^[a-z]{2}(-[A-Z]{2})?$")
 
 private suspend fun ApplicationCall.requireSupabaseUser(authClient: SupabaseAuthClient): SupabaseUser? {
     val header = request.headers[HttpHeaders.Authorization]
@@ -35,6 +40,8 @@ fun Application.configureRouting() {
     val authClient = configureSupabaseAuthClient()
     val managerRepository = ManagerRepository()
     val processRepository = ProcessRepository()
+    val activitiesRepository = ActivitiesRepository()
+    val operationsRepository = OperationsRepository()
 
     routing {
         get("/") {
@@ -62,18 +69,6 @@ fun Application.configureRouting() {
 
                     val fieldErrors = mutableMapOf<String, String>()
                     if (body.fullName.isBlank()) fieldErrors["fullName"] = "Nome completo é obrigatório."
-                    if (!LANGUAGE_PATTERN.matches(body.firstLanguage.trim())) {
-                        fieldErrors["firstLanguage"] = "Idioma principal deve ser um código válido (ex.: pt, en)."
-                    }
-                    if (!LANGUAGE_PATTERN.matches(body.targetLanguage.trim())) {
-                        fieldErrors["targetLanguage"] = "Idioma de interface deve ser um código válido (ex.: pt, en)."
-                    }
-                    if (body.firstLanguage.trim() == body.targetLanguage.trim()) {
-                        fieldErrors["targetLanguage"] = "O idioma de interface deve ser diferente do idioma principal."
-                    }
-                    if (body.locationEnabled && body.basedIn.isNullOrBlank()) {
-                        fieldErrors["basedIn"] = "Informe onde você está baseado."
-                    }
                     if (fieldErrors.isNotEmpty()) {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("Corrija os campos destacados.", fieldErrors))
                         return@put
@@ -85,10 +80,6 @@ fun Application.configureRouting() {
                     val updated = managerRepository.update(
                         userId = supabaseUser.id,
                         fullName = body.fullName.trim(),
-                        firstLanguage = body.firstLanguage.trim(),
-                        targetLanguage = body.targetLanguage.trim(),
-                        locationEnabled = body.locationEnabled,
-                        basedIn = body.basedIn?.trim(),
                     )
                     if (updated == null) {
                         call.respond(HttpStatusCode.NotFound, ErrorResponse("Conta não encontrada."))
@@ -204,6 +195,153 @@ fun Application.configureRouting() {
                         return@delete
                     }
                     call.respond(HttpStatusCode.NoContent)
+                }
+            }
+
+            route("/activities") {
+                get {
+                    val activities = activitiesRepository.listAll().map { it.toResponse() }
+                    call.respond(activities)
+                }
+
+                post {
+                    val body = call.receive<CreateActivityRequest>()
+
+                    val fieldErrors = mutableMapOf<String, String>()
+                    if (body.name.isBlank()) fieldErrors["name"] = "Nome da atividade é obrigatório."
+                    if (fieldErrors.isNotEmpty()) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("Corrija os campos destacados.", fieldErrors))
+                        return@post
+                    }
+
+                    val activity = activitiesRepository.create(
+                        name = body.name.trim(),
+                        description = body.description.trim(),
+                    )
+                    call.respond(HttpStatusCode.Created, activity.toResponse())
+                }
+
+                get("/{id}") {
+                    val id = call.parameters["id"]?.let(::runCatchingUuid)
+                    if (id == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de atividade inválido."))
+                        return@get
+                    }
+                    val activity = activitiesRepository.findById(id)
+                    if (activity == null) {
+                        call.respond(HttpStatusCode.NotFound, ErrorResponse("Atividade não encontrada."))
+                        return@get
+                    }
+                    call.respond(activity.toResponse())
+                }
+
+                put("/{id}") {
+                    val id = call.parameters["id"]?.let(::runCatchingUuid)
+                    if (id == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de atividade inválido."))
+                        return@put
+                    }
+                    val body = call.receive<UpdateActivityRequest>()
+
+                    val fieldErrors = mutableMapOf<String, String>()
+                    if (body.name.isBlank()) fieldErrors["name"] = "Nome da atividade é obrigatório."
+                    if (fieldErrors.isNotEmpty()) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("Corrija os campos destacados.", fieldErrors))
+                        return@put
+                    }
+
+                    val updated = activitiesRepository.update(
+                        id = id,
+                        name = body.name.trim(),
+                        description = body.description.trim(),
+                    )
+                    if (updated == null) {
+                        call.respond(HttpStatusCode.NotFound, ErrorResponse("Atividade não encontrada."))
+                        return@put
+                    }
+                    call.respond(updated.toResponse())
+                }
+            }
+
+            route("/processes/{processId}/operations") {
+                get {
+                    val supabaseUser = call.requireSupabaseUser(authClient) ?: return@get
+                    val processId = call.parameters["processId"]?.let(::runCatchingUuid)
+                    if (processId == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
+                        return@get
+                    }
+
+                    val manager = managerRepository.findOrCreateForSupabaseUser(
+                        supabaseUser.id, supabaseUser.email, supabaseUser.fullNameHint,
+                    )
+                    val process = processRepository.findByIdForManager(processId, manager.id)
+                    if (process == null) {
+                        call.respond(HttpStatusCode.NotFound, ErrorResponse("Processo não encontrado."))
+                        return@get
+                    }
+
+                    // Get all event logs for this process, then operations for each
+                    val operations = mutableListOf<OperationRecord>()
+                    // TODO: implement when EventLogsRepository exists
+                    call.respond(operations.map { it.toResponse() })
+                }
+
+                post {
+                    val supabaseUser = call.requireSupabaseUser(authClient) ?: return@post
+                    val processId = call.parameters["processId"]?.let(::runCatchingUuid)
+                    if (processId == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
+                        return@post
+                    }
+
+                    val manager = managerRepository.findOrCreateForSupabaseUser(
+                        supabaseUser.id, supabaseUser.email, supabaseUser.fullNameHint,
+                    )
+                    val process = processRepository.findByIdForManager(processId, manager.id)
+                    if (process == null) {
+                        call.respond(HttpStatusCode.NotFound, ErrorResponse("Processo não encontrado."))
+                        return@post
+                    }
+
+                    // TODO: implement when EventLogsRepository exists
+                    // For now, return 501 Not Implemented
+                    call.respond(HttpStatusCode.NotImplemented, ErrorResponse("Endpoint ainda não implementado. Aguardando EventLogsRepository."))
+                }
+            }
+
+            route("/operations/{id}/map") {
+                post {
+                    val id = call.parameters["id"]?.let(::runCatchingUuid)
+                    if (id == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de operação inválido."))
+                        return@post
+                    }
+
+                    val body = call.receive<MapOperationRequest>()
+                    val updated = operationsRepository.mapToActivity(id, body.activityId)
+                    if (updated == null) {
+                        call.respond(HttpStatusCode.NotFound, ErrorResponse("Operação não encontrada."))
+                        return@post
+                    }
+                    call.respond(updated.toResponse())
+                }
+            }
+
+            route("/operations/{id}/unmap") {
+                post {
+                    val id = call.parameters["id"]?.let(::runCatchingUuid)
+                    if (id == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de operação inválido."))
+                        return@post
+                    }
+
+                    val updated = operationsRepository.unmap(id)
+                    if (updated == null) {
+                        call.respond(HttpStatusCode.NotFound, ErrorResponse("Operação não encontrada."))
+                        return@post
+                    }
+                    call.respond(updated.toResponse())
                 }
             }
         }

@@ -11,10 +11,6 @@ import org.jetbrains.exposed.sql.transactions.transaction
 import org.jetbrains.exposed.sql.update
 import java.time.OffsetDateTime
 import java.util.UUID
-
-private const val DEFAULT_FIRST_LANGUAGE = "pt"
-private const val DEFAULT_TARGET_LANGUAGE = "en"
-
 class ManagerRepository {
     fun findByUserId(userId: UUID): ManagerRecord? = transaction {
         (ManagersTable innerJoin UsersTable)
@@ -59,10 +55,6 @@ class ManagerRepository {
                 it[ManagersTable.id] = managerId
                 it[ManagersTable.userId] = supabaseUserId
                 it[ManagersTable.fullName] = fullNameHint.ifBlank { normalizedEmail.substringBefore("@") }
-                it[ManagersTable.firstLanguage] = DEFAULT_FIRST_LANGUAGE
-                it[ManagersTable.targetLanguage] = DEFAULT_TARGET_LANGUAGE
-                it[ManagersTable.locationEnabled] = false
-                it[ManagersTable.basedIn] = null
                 it[ManagersTable.createdAt] = now
                 it[ManagersTable.updatedAt] = now
             }
@@ -72,10 +64,6 @@ class ManagerRepository {
                 userId = supabaseUserId,
                 email = normalizedEmail,
                 fullName = fullNameHint.ifBlank { normalizedEmail.substringBefore("@") },
-                firstLanguage = DEFAULT_FIRST_LANGUAGE,
-                targetLanguage = DEFAULT_TARGET_LANGUAGE,
-                locationEnabled = false,
-                basedIn = null,
                 createdAt = now,
                 updatedAt = now,
             )
@@ -84,18 +72,10 @@ class ManagerRepository {
     fun update(
         userId: UUID,
         fullName: String,
-        firstLanguage: String,
-        targetLanguage: String,
-        locationEnabled: Boolean,
-        basedIn: String?,
     ): ManagerRecord? = transaction {
         val now = OffsetDateTime.now()
         val updated = ManagersTable.update({ ManagersTable.userId eq userId }) {
             it[ManagersTable.fullName] = fullName
-            it[ManagersTable.firstLanguage] = firstLanguage
-            it[ManagersTable.targetLanguage] = targetLanguage
-            it[ManagersTable.locationEnabled] = locationEnabled
-            it[ManagersTable.basedIn] = if (locationEnabled) basedIn else null
             it[ManagersTable.updatedAt] = now
         }
         if (updated == 0) return@transaction null
@@ -113,10 +93,6 @@ class ManagerRepository {
         userId = this[ManagersTable.userId],
         email = this[UsersTable.email],
         fullName = this[ManagersTable.fullName],
-        firstLanguage = this[ManagersTable.firstLanguage],
-        targetLanguage = this[ManagersTable.targetLanguage],
-        locationEnabled = this[ManagersTable.locationEnabled],
-        basedIn = this[ManagersTable.basedIn],
         createdAt = this[ManagersTable.createdAt],
         updatedAt = this[ManagersTable.updatedAt],
     )

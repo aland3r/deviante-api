@@ -3,11 +3,10 @@ package com.deviante.model
 import java.time.OffsetDateTime
 import java.util.UUID
 
-data class ManagerRecord(
+data class ActivityRecord(
     val id: UUID,
-    val userId: UUID,
-    val email: String,
-    val fullName: String,
+    val name: String,
+    val description: String,
     val createdAt: OffsetDateTime,
     val updatedAt: OffsetDateTime,
 )
