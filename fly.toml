@@ -1,5 +1,5 @@
 app = "deviante-api"
-primary_region = "sa-east-1"
+primary_region = "iad"
 
 [build]
   image = "eclipse-temurin:21-jdk"
