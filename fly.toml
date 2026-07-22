@@ -24,13 +24,11 @@ primary_region = "sa-east-1"
     hard_limit = 25
     soft_limit = 20
 
-[processes]
-  api = "./gradlew run"
-
-[checks]
-  [checks.status]
-    type = "http"
-    interval = "15s"
-    timeout = "5s"
+  [[services.http_checks]]
+    interval = 15000
+    timeout = 5000
     grace_period = "10s"
     path = "/ping"
+
+[processes]
+  api = "./gradlew run"
