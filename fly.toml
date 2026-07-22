@@ -17,7 +17,6 @@ primary_region = "sa-east-1"
   [[services.ports]]
     port = 443
     handlers = ["tls", "http"]
-    force_https = true
 
   [services.concurrency]
     type = "requests"
