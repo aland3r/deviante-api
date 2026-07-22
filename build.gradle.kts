@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.deviante"
-version = "1.0.0-SNAPSHOT"
+version = "0.2.0"
 
 application {
     mainClass = "io.ktor.server.netty.EngineMain"
@@ -25,6 +25,7 @@ afterEvaluate {
                 }
                 .forEach { (key, value) -> environment(key, value) }
         }
+        systemProperty("HIKARI_POOL_SIZE", "2")
     }
 }
 
