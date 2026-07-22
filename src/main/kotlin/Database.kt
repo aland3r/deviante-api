@@ -1,5 +1,6 @@
 package com.deviante
 
+import com.deviante.seed.SeedDemoData
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import io.ktor.server.application.*
@@ -20,4 +21,7 @@ fun Application.configureDatabase() {
 
     val dataSource = HikariDataSource(hikariConfig)
     Database.connect(dataSource)
+
+    // Seed demo data if needed (idempotent check inside)
+    SeedDemoData.runIfNeeded()
 }
