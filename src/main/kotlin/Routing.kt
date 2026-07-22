@@ -1,24 +1,77 @@
 package com.deviante
 
 import com.deviante.dto.CreateActivityRequest
-import com.deviante.dto.CreateOperationRequest
 import com.deviante.dto.ErrorResponse
+import com.deviante.dto.EventLogUploadResponse
 import com.deviante.dto.MapOperationRequest
+import com.deviante.dto.ResolveMappingRequest
+import com.deviante.dto.ResolveMappingResponse
+import com.deviante.dto.UnmappedOperationResponse
 import com.deviante.dto.UpdateActivityRequest
 import com.deviante.dto.UpdateManagerRequest
 import com.deviante.dto.UpdateProcessRequest
 import com.deviante.dto.toResponse
-import com.deviante.model.OperationRecord
+import com.deviante.model.ProcessRecord
 import com.deviante.repository.ActivitiesRepository
+import com.deviante.repository.EventLogIngestionRepository
+import com.deviante.repository.EventLogsRepository
 import com.deviante.repository.ManagerRepository
+import com.deviante.repository.MappingRepository
 import com.deviante.repository.OperationsRepository
+import com.deviante.repository.ProcessGraphRepository
 import com.deviante.repository.ProcessRepository
 import io.ktor.http.*
+import io.ktor.http.content.*
 import io.ktor.server.application.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import io.ktor.utils.io.*
+import io.ktor.utils.io.core.*
+import kotlinx.io.readByteArray
 import java.util.UUID
+
+/**
+ * Authenticates, resolves the Manager, and checks the process is visible to
+ * them — the same four-step preamble every process-scoped route needs.
+ * Responds with the right status itself and returns null when it fails.
+ */
+private suspend fun ApplicationCall.requireProcess(
+    authClient: SupabaseAuthClient,
+    managerRepository: ManagerRepository,
+    processRepository: ProcessRepository,
+    processId: UUID,
+): ProcessRecord? {
+    val supabaseUser = requireSupabaseUser(authClient) ?: return null
+    val manager = managerRepository.findOrCreateForSupabaseUser(
+        supabaseUser.id,
+        supabaseUser.email,
+        supabaseUser.fullNameHint,
+    )
+    val process = processRepository.findByIdForManager(processId, manager.id)
+    if (process == null) {
+        respond(HttpStatusCode.NotFound, ErrorResponse("Processo não encontrado."))
+        return null
+    }
+    return process
+}
+
+/** Reads the first file part of a multipart upload, discarding the rest. */
+private suspend fun ApplicationCall.receiveUploadedFile(): Pair<String, ByteArray>? {
+    var result: Pair<String, ByteArray>? = null
+
+    receiveMultipart().forEachPart { part ->
+        if (result == null && part is PartData.FileItem) {
+            val name = part.originalFileName.orEmpty()
+            if (name.isNotBlank()) {
+                result = name to part.provider().readRemaining().readByteArray()
+            }
+        }
+        part.dispose()
+    }
+
+    return result
+}
 
 private suspend fun ApplicationCall.requireSupabaseUser(authClient: SupabaseAuthClient): SupabaseUser? {
     val header = request.headers[HttpHeaders.Authorization]
@@ -42,6 +95,11 @@ fun Application.configureRouting() {
     val processRepository = ProcessRepository()
     val activitiesRepository = ActivitiesRepository()
     val operationsRepository = OperationsRepository()
+    val eventLogsRepository = EventLogsRepository()
+    val ingestionRepository = EventLogIngestionRepository()
+    val mappingRepository = MappingRepository()
+    val graphRepository = ProcessGraphRepository()
+    val miningClient = configureMiningClient()
 
     routing {
         get("/") {
@@ -275,42 +333,203 @@ fun Application.configureRouting() {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
                         return@get
                     }
-
-                    val manager = managerRepository.findOrCreateForSupabaseUser(
-                        supabaseUser.id, supabaseUser.email, supabaseUser.fullNameHint,
-                    )
-                    val process = processRepository.findByIdForManager(processId, manager.id)
-                    if (process == null) {
-                        call.respond(HttpStatusCode.NotFound, ErrorResponse("Processo não encontrado."))
+                    if (call.requireProcess(authClient, managerRepository, processRepository, processId) == null) {
                         return@get
                     }
 
-                    // Get all event logs for this process, then operations for each
-                    val operations = mutableListOf<OperationRecord>()
-                    // TODO: implement when EventLogsRepository exists
-                    call.respond(operations.map { it.toResponse() })
+                    val activityNames = activitiesRepository.listAll().associate { it.id to it.name }
+                    val operations = eventLogsRepository.findByProcessId(processId)
+                        .flatMap { operationsRepository.listForEventLog(it.id) }
+                        .map { it.toResponse(activityNames[it.activityId]) }
+
+                    call.respond(operations)
+                }
+            }
+
+            /**
+             * UC7 — the process graph, derived from the latest parsed event log
+             * of this process. Empty (not an error) while no log was ingested:
+             * "nothing uploaded yet" is a state the canvas draws.
+             */
+            route("/processes/{processId}/graph") {
+                get {
+                    val processId = call.parameters["processId"]?.let(::runCatchingUuid)
+                    if (processId == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
+                        return@get
+                    }
+                    if (call.requireProcess(authClient, managerRepository, processRepository, processId) == null) {
+                        return@get
+                    }
+
+                    call.respond(graphRepository.graph(processId))
+                }
+            }
+
+            /** Variant tree behind the canvas's traces panel. */
+            route("/processes/{processId}/traces") {
+                get {
+                    val processId = call.parameters["processId"]?.let(::runCatchingUuid)
+                    if (processId == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
+                        return@get
+                    }
+                    if (call.requireProcess(authClient, managerRepository, processRepository, processId) == null) {
+                        return@get
+                    }
+
+                    call.respond(graphRepository.variants(processId))
+                }
+            }
+
+            route("/processes/{processId}/event-logs") {
+                get {
+                    val processId = call.parameters["processId"]?.let(::runCatchingUuid)
+                    if (processId == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
+                        return@get
+                    }
+                    if (call.requireProcess(authClient, managerRepository, processRepository, processId) == null) {
+                        return@get
+                    }
+
+                    call.respond(eventLogsRepository.findByProcessId(processId).map { it.toResponse() })
                 }
 
+                /**
+                 * UC4 — upload an event log into an existing process.
+                 *
+                 * The file goes to the Python mining service for parsing and
+                 * comes back as distinct labels + traces; this route persists
+                 * that result and hands the Manager the unmapped operations to
+                 * resolve (UC5). The process graph stays unavailable until the
+                 * mapping is confirmed — an unmapped log has no activities to
+                 * draw nodes from.
+                 */
                 post {
-                    val supabaseUser = call.requireSupabaseUser(authClient) ?: return@post
                     val processId = call.parameters["processId"]?.let(::runCatchingUuid)
                     if (processId == null) {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
                         return@post
                     }
-
-                    val manager = managerRepository.findOrCreateForSupabaseUser(
-                        supabaseUser.id, supabaseUser.email, supabaseUser.fullNameHint,
-                    )
-                    val process = processRepository.findByIdForManager(processId, manager.id)
-                    if (process == null) {
-                        call.respond(HttpStatusCode.NotFound, ErrorResponse("Processo não encontrado."))
+                    if (call.requireProcess(authClient, managerRepository, processRepository, processId) == null) {
                         return@post
                     }
 
-                    // TODO: implement when EventLogsRepository exists
-                    // For now, return 501 Not Implemented
-                    call.respond(HttpStatusCode.NotImplemented, ErrorResponse("Endpoint ainda não implementado. Aguardando EventLogsRepository."))
+                    val upload = call.receiveUploadedFile()
+                    if (upload == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("Nenhum arquivo enviado."))
+                        return@post
+                    }
+                    val (fileName, bytes) = upload
+
+                    val extension = fileName.substringAfterLast('.', "").lowercase()
+                    if (extension !in setOf("xes", "csv")) {
+                        call.respond(
+                            HttpStatusCode.UnsupportedMediaType,
+                            ErrorResponse("Envie um arquivo .xes ou .csv."),
+                        )
+                        return@post
+                    }
+
+                    val parsed = try {
+                        miningClient.parse(fileName, bytes)
+                    } catch (err: MiningParseException) {
+                        // Keep the failed attempt on the process: a log the
+                        // Manager could not parse is history worth showing.
+                        ingestionRepository.recordFailure(
+                            processId, fileName, extension, err.message ?: "Falha ao interpretar o arquivo.",
+                        )
+                        call.respond(HttpStatusCode.UnprocessableEntity, ErrorResponse(err.message ?: "Arquivo inválido."))
+                        return@post
+                    } catch (err: MiningUnavailableException) {
+                        call.respond(HttpStatusCode.ServiceUnavailable, ErrorResponse(err.message ?: "Serviço indisponível."))
+                        return@post
+                    }
+
+                    val ingested = ingestionRepository.ingest(processId, fileName, parsed)
+                    val statsByLabel = parsed.events.associateBy { it.rawLabel }
+
+                    val operations = operationsRepository.listForEventLog(ingested.eventLog.id).map { operation ->
+                        val stats = statsByLabel[operation.rawLabel]
+                        UnmappedOperationResponse(
+                            id = operation.id.toString(),
+                            rawLabel = operation.rawLabel,
+                            occurrenceCount = operation.occurrenceCount,
+                            caseCount = stats?.caseCount ?: 0,
+                            meanDurationSeconds = stats?.meanDurationSeconds ?: 0.0,
+                            // No catalog to match against yet — the Manager
+                            // rewrites this before confirming.
+                            suggestedActivityName = operation.rawLabel,
+                            activityId = operation.activityId?.toString(),
+                            mappingStatus = operation.mappingStatus,
+                        )
+                    }
+
+                    call.respond(
+                        HttpStatusCode.Created,
+                        EventLogUploadResponse(
+                            eventLog = ingested.eventLog.toResponse(),
+                            operations = operations,
+                        ),
+                    )
+                }
+            }
+
+            /**
+             * UC5 — confirm the whole mapping at once. Partial confirmation is
+             * deliberately not offered: the Manager reviews every operation in
+             * the modal and approves the set.
+             */
+            route("/processes/{processId}/mapping") {
+                post {
+                    val processId = call.parameters["processId"]?.let(::runCatchingUuid)
+                    if (processId == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
+                        return@post
+                    }
+                    if (call.requireProcess(authClient, managerRepository, processRepository, processId) == null) {
+                        return@post
+                    }
+
+                    val body = call.receive<ResolveMappingRequest>()
+                    if (body.mappings.isEmpty()) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("Nenhum mapeamento enviado."))
+                        return@post
+                    }
+
+                    val blank = body.mappings.filter { it.activityName.isBlank() }
+                    if (blank.isNotEmpty()) {
+                        call.respond(
+                            HttpStatusCode.BadRequest,
+                            ErrorResponse("Toda atividade precisa de um nome (${blank.size} em branco)."),
+                        )
+                        return@post
+                    }
+
+                    val resolutions = body.mappings.mapNotNull { item ->
+                        val operationId = runCatchingUuid(item.operationId) ?: return@mapNotNull null
+                        MappingRepository.Resolution(
+                            operationId = operationId,
+                            activityName = item.activityName,
+                            activityDescription = item.activityDescription,
+                        )
+                    }
+                    if (resolutions.size != body.mappings.size) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de operação inválido no mapeamento."))
+                        return@post
+                    }
+
+                    val result = mappingRepository.resolveAll(processId, resolutions)
+                    val activityNames = result.activities.associate { it.id to it.name }
+
+                    call.respond(
+                        ResolveMappingResponse(
+                            mappedCount = result.operations.size,
+                            activities = result.activities.map { it.toResponse() },
+                            operations = result.operations.map { it.toResponse(activityNames[it.activityId]) },
+                        ),
+                    )
                 }
             }
 
@@ -323,7 +542,13 @@ fun Application.configureRouting() {
                     }
 
                     val body = call.receive<MapOperationRequest>()
-                    val updated = operationsRepository.mapToActivity(id, body.activityId)
+                    val activityId = runCatchingUuid(body.activityId)
+                    if (activityId == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de atividade inválido."))
+                        return@post
+                    }
+
+                    val updated = operationsRepository.mapToActivity(id, activityId)
                     if (updated == null) {
                         call.respond(HttpStatusCode.NotFound, ErrorResponse("Operação não encontrada."))
                         return@post
