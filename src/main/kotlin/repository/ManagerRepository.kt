@@ -14,7 +14,7 @@ import java.util.UUID
 class ManagerRepository {
     companion object {
         // Roles that can see all processes
-        private val OWNER_EMAILS = setOf("design@alander.io")
+        private val OWNER_EMAILS = setOf("design@alander.io", "alanderavila@gmail.com")
         private val MENTOR_EMAILS = setOf("pafileiro@gmail.com")
     }
 
@@ -46,7 +46,19 @@ class ManagerRepository {
                 .limit(1)
                 .firstOrNull()
                 ?.toManagerRecord()
-            if (existing != null) return@transaction existing
+            if (existing != null) {
+                // Re-derive the role on every login: a manager row created
+                // before its e-mail was added to OWNER_EMAILS/MENTOR_EMAILS
+                // would otherwise stay stuck on the role it got at signup.
+                val expected = detectRole(existing.email)
+                if (existing.role == expected) return@transaction existing
+
+                ManagersTable.update({ ManagersTable.userId eq supabaseUserId }) {
+                    it[ManagersTable.role] = expected
+                    it[ManagersTable.updatedAt] = OffsetDateTime.now()
+                }
+                return@transaction existing.copy(role = expected)
+            }
 
             val now = OffsetDateTime.now()
             val normalizedEmail = email.trim().lowercase()

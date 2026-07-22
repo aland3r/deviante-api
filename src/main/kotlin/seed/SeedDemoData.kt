@@ -1,249 +1,122 @@
 package com.deviante.seed
 
-import com.deviante.db.ActivitiesTable
-import com.deviante.db.EventLogsTable
 import com.deviante.db.ManagersTable
 import com.deviante.db.ProcessesTable
-import com.deviante.db.UsersTable
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
-import java.io.File
 import java.time.OffsetDateTime
 import java.util.UUID
 
 /**
- * SeedDemoData — Bootstrap Deviante with demo processes + event logs for immediate testing.
+ * Gives the owner something to open on a fresh database, so the first login
+ * is not an empty dashboard.
  *
- * - Idempotent: checks if demo data already exists before inserting
- * - Owner/mentor get full access to all demo processes
- * - Event logs are loaded from CSV/XES files in the repo
+ * **Seeds processes only — never identities.** An earlier version created
+ * `deviante.users` + `deviante.managers` rows for the owner and mentor with
+ * freshly generated UUIDs. Those UUIDs cannot match the ones Supabase Auth
+ * issues, so the first real OAuth login hit the unique index on
+ * `managers.email` and failed: the seed locked the owner out of the product
+ * it was meant to demo. Identity is created by
+ * `ManagerRepository.findOrCreateForSupabaseUser`, from the real token, and
+ * this object must not race it.
+ *
+ * The consequence is that a truly empty database seeds nothing on boot —
+ * there is no manager to own a process yet. It seeds on the next start after
+ * the owner has logged in once, which is the first moment the rows can be
+ * correct.
  */
 object SeedDemoData {
-    private val OWNER_EMAIL = "design@alander.io"
-    private val MENTOR_EMAIL = "pafileiro@gmail.com"
+    private const val OWNER_EMAIL = "design@alander.io"
 
-    private val DEMO_DATASETS_DIR = "deviante/Adaptive-Detection-of-Performance-Related-Temporal-Drifts-main"
-    private val SAMPLE_LOG_FILE = "real_dataset/Prod1Torno.csv"
-
-    /**
-     * Run seed if conditions are met:
-     * - Demo process catalog is empty (checked via process count)
-     * - Owner user exists in auth (Supabase Auth must be configured)
-     */
     fun runIfNeeded() {
         try {
             transaction {
-                val hasExistingDemoData = ProcessesTable.selectAll().count() > 0
-                if (hasExistingDemoData) {
+                if (ProcessesTable.selectAll().count() > 0) {
                     println("✓ Demo data already exists; skipping seed.")
                     return@transaction
                 }
 
-                println("🌱 Seeding Deviante demo data...")
-                seedManagers()
-                seedActivities()
-                seedDemoProcesses()
-                seedEventLogs()
+                val ownerManagerId = ManagersTable
+                    .selectAll()
+                    .where { ManagersTable.email eq OWNER_EMAIL }
+                    .firstOrNull()
+                    ?.get(ManagersTable.id)
+
+                if (ownerManagerId == null) {
+                    println("✓ No owner manager yet ($OWNER_EMAIL has not logged in); skipping seed.")
+                    return@transaction
+                }
+
+                println("🌱 Seeding Deviante demo processes...")
+                seedDemoProcesses(ownerManagerId)
                 println("✓ Demo data seed complete.")
             }
         } catch (e: Exception) {
-            // Non-fatal: log but don't crash the app
+            // Non-fatal: a failed seed must not stop the API from booting.
             println("⚠ Seed warning (non-fatal): ${e.message}")
             e.printStackTrace()
         }
     }
 
-    private fun seedManagers() {
+    /**
+     * Empty shells, deliberately: a process becomes useful by having a log
+     * uploaded into it (UC4). Seeding an `event_logs` row here would be a
+     * lie — nothing parsed it, so it would sit at `parse_status = 'pending'`
+     * forever with zero operations and zero traces, and the graph would have
+     * nothing to draw from it.
+     *
+     * Activities are not seeded either. The catalog is global (UC3) and the
+     * mapping step creates entries from the labels a real log actually
+     * contains; pre-filling it with unrelated names risks
+     * `MappingRepository.resolveAll` silently binding an uploaded event to a
+     * demo activity that happens to share its name.
+     */
+    private fun seedDemoProcesses(ownerManagerId: UUID) {
         val now = OffsetDateTime.now()
-
-        // Owner
-        val ownerExists = ManagersTable
-            .selectAll()
-            .where { ManagersTable.email eq OWNER_EMAIL }
-            .any()
-        if (!ownerExists) {
-            val ownerUserId = UUID.randomUUID()
-            UsersTable.insert {
-                it[UsersTable.id] = ownerUserId
-                it[UsersTable.email] = OWNER_EMAIL
-                it[UsersTable.passwordHash] = null
-                it[UsersTable.createdAt] = now
-                it[UsersTable.updatedAt] = now
-            }
-            ManagersTable.insert {
-                it[ManagersTable.id] = UUID.randomUUID()
-                it[ManagersTable.userId] = ownerUserId
-                it[ManagersTable.email] = OWNER_EMAIL
-                it[ManagersTable.fullName] = "Alander Ávila (Owner)"
-                it[ManagersTable.role] = "owner"
-                it[ManagersTable.createdAt] = now
-                it[ManagersTable.updatedAt] = now
-            }
-            println("  ✓ Owner manager created: $OWNER_EMAIL")
-        }
-
-        // Mentor
-        val mentorExists = ManagersTable
-            .selectAll()
-            .where { ManagersTable.email eq MENTOR_EMAIL }
-            .any()
-        if (!mentorExists) {
-            val mentorUserId = UUID.randomUUID()
-            UsersTable.insert {
-                it[UsersTable.id] = mentorUserId
-                it[UsersTable.email] = MENTOR_EMAIL
-                it[UsersTable.passwordHash] = null
-                it[UsersTable.createdAt] = now
-                it[UsersTable.updatedAt] = now
-            }
-            ManagersTable.insert {
-                it[ManagersTable.id] = UUID.randomUUID()
-                it[ManagersTable.userId] = mentorUserId
-                it[ManagersTable.email] = MENTOR_EMAIL
-                it[ManagersTable.fullName] = "Luiz Picolo (Mentor)"
-                it[ManagersTable.role] = "mentor"
-                it[ManagersTable.createdAt] = now
-                it[ManagersTable.updatedAt] = now
-            }
-            println("  ✓ Mentor manager created: $MENTOR_EMAIL")
-        }
-    }
-
-    private fun seedActivities() {
-        val now = OffsetDateTime.now()
-        val activities = listOf(
-            "Recebimento" to "Aceitar pedido ou entrada no sistema",
-            "Validação" to "Verificar completude e conformidade dos dados",
-            "Picking" to "Coleta de itens do estoque",
-            "Embalagem" to "Preparar e embalar para envio",
-            "Expedição" to "Registrar saída e gerar rastreamento",
-            "Triagem" to "Classificar por prioridade/tipo",
-            "Investigação" to "Análise detalhada do problema",
-            "Resolução" to "Implementar solução",
-            "Feedback" to "Solicitar confirmação do cliente",
-            "Pré-aprovação" to "Avaliação inicial de elegibilidade",
-            "Documentação" to "Coleta de documentos comprobatórios",
-            "Underwriting" to "Análise de risco detalhada",
-            "Aprovação" to "Decisão final de concessão",
-            "Desembolso" to "Transferência de fundos ao cliente",
-        )
-
-        for ((name, description) in activities) {
-            val exists = ActivitiesTable
-                .selectAll()
-                .where { ActivitiesTable.name eq name }
-                .any()
-            if (!exists) {
-                ActivitiesTable.insert {
-                    it[ActivitiesTable.id] = UUID.randomUUID()
-                    it[ActivitiesTable.name] = name
-                    it[ActivitiesTable.description] = description
-                    it[ActivitiesTable.createdAt] = now
-                    it[ActivitiesTable.updatedAt] = now
-                }
-            }
-        }
-        println("  ✓ Activities catalog seeded: ${activities.size} activities")
-    }
-
-    private fun seedDemoProcesses() {
-        val now = OffsetDateTime.now()
-        val ownerManagerId = ManagersTable
-            .selectAll()
-            .where { ManagersTable.email eq OWNER_EMAIL }
-            .firstOrNull()
-            ?.get(ManagersTable.id)
-            ?: return
 
         val demoProcesses = listOf(
             Triple(
                 "Torno Production (Demo)",
                 "TechManufacturing LTDA",
-                "Manufacturing process: lathe operations, quality check, assembly. Real dataset: Prod1Torno.csv (drift analysis)."
+                "Torneamento em chão de fábrica. Carregue `real_dataset/Prod1Torno.csv` "
+                    + "(dataset real do grupo de pesquisa) para ver o processo.",
             ),
             Triple(
-                "Processo de Aprovação de Pedidos (Manufatura)",
+                "Linha Estável (Demo)",
                 "TechManufacturing LTDA",
-                "Fluxo end-to-end de pedidos de clientes: recebimento, validação, picking, embalagem, shipping. Dataset: 2.5K traces, 450 eventos únicos, duração média 18h."
+                "Série de controle sem desvio injetado. Carregue `dataset_manufacturing/ST_01.xes` "
+                    + "para a linha de base.",
             ),
             Triple(
-                "Fluxo de Atendimento ao Cliente (Varejo)",
-                "RetailHub Brasil",
-                "Processo de suporte ao cliente: abertura de ticket, triagem, investigação, resolução, feedback. Dataset: 1.2K traces, 8 operações principais, SLA 24h."
-            ),
-            Triple(
-                "Pipeline de Processamento de Reclamações (Financeiro)",
-                "FinServ Partners",
-                "Gestão de reclamações de clientes com órgãos reguladores: intake, análise, resposta, arquivo. Dataset: 890 traces, compliance-focused, estudo de drift temporal."
+                "Linha com Desvio (Demo)",
+                "TechManufacturing LTDA",
+                "Mesma linha, com um desvio injetado no trace 10. Carregue "
+                    + "`dataset_manufacturing/DR_01.xes` e compare com a linha de base.",
             ),
         )
 
         for ((name, company, description) in demoProcesses) {
             val exists = ProcessesTable
                 .selectAll()
-                .where {
-                    (ProcessesTable.name eq name) and (ProcessesTable.managerId eq ownerManagerId)
-                }
+                .where { (ProcessesTable.name eq name) and (ProcessesTable.managerId eq ownerManagerId) }
                 .any()
-            if (!exists) {
-                ProcessesTable.insert {
-                    it[ProcessesTable.id] = UUID.randomUUID()
-                    it[ProcessesTable.managerId] = ownerManagerId
-                    it[ProcessesTable.name] = name
-                    it[ProcessesTable.companyName] = company
-                    it[ProcessesTable.description] = description
-                    it[ProcessesTable.sector] = "Manufacturing"
-                    it[ProcessesTable.createdAt] = now
-                    it[ProcessesTable.updatedAt] = now
-                }
+            if (exists) continue
+
+            ProcessesTable.insert {
+                it[ProcessesTable.id] = UUID.randomUUID()
+                it[ProcessesTable.managerId] = ownerManagerId
+                it[ProcessesTable.name] = name
+                it[ProcessesTable.companyName] = company
+                it[ProcessesTable.description] = description
+                it[ProcessesTable.sector] = "Manufacturing"
+                it[ProcessesTable.createdAt] = now
+                it[ProcessesTable.updatedAt] = now
             }
         }
-        println("  ✓ Demo processes created: ${demoProcesses.size} processes for owner")
-    }
 
-    private fun seedEventLogs() {
-        val now = OffsetDateTime.now()
-
-        // Find first demo process (Torno Production Demo)
-        val tornoProcess = ProcessesTable
-            .selectAll()
-            .where { ProcessesTable.name eq "Torno Production (Demo)" }
-            .firstOrNull()
-            ?.get(ProcessesTable.id)
-            ?: return
-
-        // Check if event log already seeded for this process
-        val logExists = EventLogsTable
-            .selectAll()
-            .where { EventLogsTable.processId eq tornoProcess }
-            .any()
-        if (logExists) {
-            println("  ✓ Event logs already exist for demo process; skipping.")
-            return
-        }
-
-        // Try to load real dataset
-        val logFile = File(DEMO_DATASETS_DIR, SAMPLE_LOG_FILE)
-        if (logFile.exists()) {
-            EventLogsTable.insert {
-                it[EventLogsTable.id] = UUID.randomUUID()
-                it[EventLogsTable.processId] = tornoProcess
-                it[EventLogsTable.fileName] = logFile.name
-                it[EventLogsTable.format] = "csv"
-                it[EventLogsTable.parseStatus] = "pending"
-                it[EventLogsTable.parseError] = null
-                it[EventLogsTable.operationCount] = 0
-                it[EventLogsTable.traceCount] = 0
-                it[EventLogsTable.uploadedAt] = now
-                it[EventLogsTable.createdAt] = now
-                it[EventLogsTable.updatedAt] = now
-            }
-            println("  ✓ Event log seeded: ${logFile.name}")
-        } else {
-            println("  ⚠ Demo event log not found at: ${logFile.absolutePath}")
-        }
+        println("  ✓ Demo processes created: ${demoProcesses.size} for owner")
     }
 }
