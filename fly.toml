@@ -1,9 +1,6 @@
 app = "deviante-api"
 primary_region = "iad"
 
-[build]
-  image = "eclipse-temurin:21-jdk"
-
 [[services]]
   protocol = "tcp"
   internal_port = 8080
@@ -30,4 +27,4 @@ primary_region = "iad"
     path = "/ping"
 
 [processes]
-  api = "./gradlew run"
+  api = "java -jar /app/app.jar"
