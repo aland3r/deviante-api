@@ -12,6 +12,18 @@ import org.jetbrains.exposed.sql.update
 import java.time.OffsetDateTime
 import java.util.UUID
 class ManagerRepository {
+    companion object {
+        // Roles that can see all processes
+        private val OWNER_EMAILS = setOf("design@alander.io")
+        private val MENTOR_EMAILS = setOf("pafileiro@gmail.com")
+    }
+
+    private fun detectRole(email: String): String = when {
+        email.lowercase() in OWNER_EMAILS -> "owner"
+        email.lowercase() in MENTOR_EMAILS -> "mentor"
+        else -> "manager"
+    }
+
     fun findByUserId(userId: UUID): ManagerRecord? = transaction {
         (ManagersTable innerJoin UsersTable)
             .selectAll()
@@ -51,10 +63,14 @@ class ManagerRepository {
             }
 
             val managerId = UUID.randomUUID()
+            val role = detectRole(normalizedEmail)
+
             ManagersTable.insert {
                 it[ManagersTable.id] = managerId
                 it[ManagersTable.userId] = supabaseUserId
+                it[ManagersTable.email] = normalizedEmail
                 it[ManagersTable.fullName] = fullNameHint.ifBlank { normalizedEmail.substringBefore("@") }
+                it[ManagersTable.role] = role
                 it[ManagersTable.createdAt] = now
                 it[ManagersTable.updatedAt] = now
             }
@@ -64,6 +80,7 @@ class ManagerRepository {
                 userId = supabaseUserId,
                 email = normalizedEmail,
                 fullName = fullNameHint.ifBlank { normalizedEmail.substringBefore("@") },
+                role = role,
                 createdAt = now,
                 updatedAt = now,
             )
@@ -93,6 +110,7 @@ class ManagerRepository {
         userId = this[ManagersTable.userId],
         email = this[UsersTable.email],
         fullName = this[ManagersTable.fullName],
+        role = this[ManagersTable.role],
         createdAt = this[ManagersTable.createdAt],
         updatedAt = this[ManagersTable.updatedAt],
     )

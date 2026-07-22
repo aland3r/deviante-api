@@ -97,7 +97,11 @@ fun Application.configureRouting() {
                         supabaseUser.email,
                         supabaseUser.fullNameHint,
                     )
-                    val processes = processRepository.listForManager(manager.id).map { it.toResponse() }
+                    // Owner/mentor see ALL processes; regular managers see only their own
+                    val processes = processRepository.listForManager(
+                        manager.id,
+                        isOwnerOrMentor = manager.isOwnerOrMentor()
+                    ).map { it.toResponse() }
                     call.respond(processes)
                 }
 

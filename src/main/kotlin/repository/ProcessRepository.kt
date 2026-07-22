@@ -17,10 +17,15 @@ import java.util.UUID
 private const val DEFAULT_PROCESS_NAME = "Untitled"
 
 class ProcessRepository {
-    fun listForManager(managerId: UUID): List<ProcessRecord> = transaction {
-        ProcessesTable
-            .selectAll()
-            .where { ProcessesTable.managerId eq managerId }
+    fun listForManager(managerId: UUID, isOwnerOrMentor: Boolean = false): List<ProcessRecord> = transaction {
+        val query = if (isOwnerOrMentor) {
+            // Owner/mentor sees ALL processes
+            ProcessesTable.selectAll()
+        } else {
+            // Regular manager sees only their own processes
+            ProcessesTable.selectAll().where { ProcessesTable.managerId eq managerId }
+        }
+        query
             .orderBy(ProcessesTable.updatedAt, SortOrder.DESC)
             .map { it.toProcessRecord() }
     }
