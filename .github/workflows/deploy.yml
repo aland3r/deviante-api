@@ -1,0 +1,36 @@
+name: Deploy to Fly.io
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    concurrency: deploy-group
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Ensure app exists
+        run: flyctl apps create deviante-api --org personal || true
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Set secrets
+        run: |
+          flyctl secrets set \
+            DATABASE_JDBC_URL="${{ secrets.DATABASE_JDBC_URL }}" \
+            DATABASE_USER="${{ secrets.DATABASE_USER }}" \
+            DATABASE_PASSWORD="${{ secrets.DATABASE_PASSWORD }}" \
+            SUPABASE_URL="${{ secrets.SUPABASE_URL }}" \
+            SUPABASE_ANON_KEY="${{ secrets.SUPABASE_ANON_KEY }}" \
+            --app deviante-api --stage
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Deploy
+        run: flyctl deploy --remote-only --app deviante-api
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

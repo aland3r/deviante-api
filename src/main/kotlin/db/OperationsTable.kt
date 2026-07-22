@@ -17,21 +17,3 @@ object OperationsTable : Table(name = "operations") {
 
     override val primaryKey = PrimaryKey(id)
 }
-
-object EventLogsTable : Table(name = "event_logs") {
-    override val tableName = "deviante.event_logs"
-
-    val id = uuid("id")
-    val processId = uuid("process_id").references(ProcessesTable.id)
-    val fileName = varchar("file_name", 255)
-    val format = varchar("format", 10) // csv, xes
-    val parseStatus = varchar("parse_status", 20) // pending, parsing, parsed, failed
-    val parseError = text("parse_error").nullable()
-    val operationCount = integer("operation_count")
-    val traceCount = integer("trace_count")
-    val uploadedAt = timestampWithTimeZone("uploaded_at")
-    val createdAt = timestampWithTimeZone("created_at")
-    val updatedAt = timestampWithTimeZone("updated_at")
-
-    override val primaryKey = PrimaryKey(id)
-}

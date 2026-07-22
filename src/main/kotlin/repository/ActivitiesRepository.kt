@@ -3,6 +3,7 @@ package com.deviante.repository
 import com.deviante.db.ActivitiesTable
 import com.deviante.db.ProcessActivitiesTable
 import com.deviante.model.ActivityRecord
+import org.jetbrains.exposed.sql.JoinType
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
@@ -23,10 +24,9 @@ class ActivitiesRepository {
 
     fun listForProcess(processId: UUID): List<ActivityRecord> = transaction {
         ProcessActivitiesTable
+            .join(ActivitiesTable, JoinType.INNER, ProcessActivitiesTable.activityId, ActivitiesTable.id)
             .selectAll()
             .where { ProcessActivitiesTable.processId eq processId }
-            .join(ActivitiesTable, { ProcessActivitiesTable.activityId }, { ActivitiesTable.id })
-            .selectAll()
             .map { it.toActivityRecord() }
     }
 
@@ -74,12 +74,11 @@ class ActivitiesRepository {
 
     fun linkToProcess(processId: UUID, activityId: UUID): Boolean = transaction {
         val now = OffsetDateTime.now()
-        val inserted = ProcessActivitiesTable.insert {
+        ProcessActivitiesTable.insert {
             it[ProcessActivitiesTable.processId] = processId
             it[ProcessActivitiesTable.activityId] = activityId
             it[ProcessActivitiesTable.createdAt] = now
-        } > 0
-        inserted
+        }.insertedCount > 0
     }
 
     private fun ResultRow.toActivityRecord() = ActivityRecord(
