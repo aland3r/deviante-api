@@ -10,6 +10,8 @@ import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import org.slf4j.LoggerFactory
 import java.util.UUID
 
 data class SupabaseUser(val id: UUID, val email: String, val fullNameHint: String)
@@ -28,20 +30,33 @@ private data class SupabaseUserMetadata(
 )
 
 class SupabaseAuthClient(private val baseUrl: String, private val anonKey: String) {
+    private val logger = LoggerFactory.getLogger(SupabaseAuthClient::class.java)
+
     private val client = HttpClient(CIO) {
-        install(ContentNegotiation) { json() }
+        // Supabase's /auth/v1/user payload carries far more fields than we model
+        // (aud, role, app_metadata, identities, ...). Strict parsing throws on
+        // those and made every valid token look expired.
+        install(ContentNegotiation) {
+            json(Json { ignoreUnknownKeys = true })
+        }
     }
 
     /** Verifies a Supabase access token by asking Supabase Auth who it belongs to. */
     suspend fun verify(accessToken: String): SupabaseUser? {
-        if (baseUrl.isBlank() || anonKey.isBlank()) return null
+        if (baseUrl.isBlank() || anonKey.isBlank()) {
+            logger.error("Supabase auth is not configured (SUPABASE_URL / SUPABASE_ANON_KEY missing).")
+            return null
+        }
 
         return try {
             val response = client.get("$baseUrl/auth/v1/user") {
                 header(HttpHeaders.Authorization, "Bearer $accessToken")
                 header("apikey", anonKey)
             }
-            if (!response.status.isSuccess()) return null
+            if (!response.status.isSuccess()) {
+                logger.warn("Supabase rejected the access token: {} {}", response.status, response.bodyAsText())
+                return null
+            }
 
             val body = response.body<SupabaseUserResponse>()
             SupabaseUser(
@@ -49,7 +64,8 @@ class SupabaseAuthClient(private val baseUrl: String, private val anonKey: Strin
                 email = body.email ?: "",
                 fullNameHint = body.user_metadata?.full_name ?: body.user_metadata?.name ?: "",
             )
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            logger.error("Failed to verify Supabase access token.", error)
             null
         }
     }
