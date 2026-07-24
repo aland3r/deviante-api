@@ -8,6 +8,7 @@ data class ManagerResponse(
     val id: String,
     val email: String,
     val fullName: String,
+    val role: String,
 )
 
 @Serializable
@@ -19,4 +20,5 @@ fun ManagerRecord.toResponse() = ManagerResponse(
     id = userId.toString(),
     email = email,
     fullName = fullName,
+    role = role,
 )

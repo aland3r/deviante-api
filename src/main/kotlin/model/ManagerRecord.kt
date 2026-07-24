@@ -12,7 +12,7 @@ data class ManagerRecord(
     val createdAt: OffsetDateTime,
     val updatedAt: OffsetDateTime,
 ) {
-    fun isOwnerOrMentor(): Boolean = role in listOf("owner", "mentor")
+    fun isOwner(): Boolean = role == "owner"
 }
 
 enum class ManagerRole(val value: String) {

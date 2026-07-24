@@ -44,6 +44,7 @@ before the first push:
 | `DATABASE_PASSWORD` | Same as local `.env` |
 | `SUPABASE_URL` | Same as local `.env` — used to verify bearer tokens against Supabase Auth |
 | `SUPABASE_ANON_KEY` | Same as local `.env` — anon/publishable key, never `service_role` |
+| `MINING_SERVICE_URL` | Private Flycast URL for the FastAPI parser: `http://deviante-mining.flycast` |
 
 The workflow creates the Fly app (`deviante-api`, region `gru`) on first run
 if it doesn't exist yet, stages the secrets, then deploys via Fly's remote

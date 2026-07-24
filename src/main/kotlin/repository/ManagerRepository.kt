@@ -13,16 +13,17 @@ import java.time.OffsetDateTime
 import java.util.UUID
 class ManagerRepository {
     companion object {
-        // Roles that can see all processes
         private val OWNER_EMAILS = setOf("design@alander.io", "alanderavila@gmail.com")
-        private val MENTOR_EMAILS = setOf("pafileiro@gmail.com")
+        private val MENTOR_EMAILS = setOf("pafileiro@gmail.com", "erloures@gmail.com")
+
+        internal fun roleForEmail(email: String): String = when {
+            email.trim().lowercase() in OWNER_EMAILS -> "owner"
+            email.trim().lowercase() in MENTOR_EMAILS -> "mentor"
+            else -> "manager"
+        }
     }
 
-    private fun detectRole(email: String): String = when {
-        email.lowercase() in OWNER_EMAILS -> "owner"
-        email.lowercase() in MENTOR_EMAILS -> "mentor"
-        else -> "manager"
-    }
+    private fun detectRole(email: String): String = roleForEmail(email)
 
     fun findByUserId(userId: UUID): ManagerRecord? = transaction {
         (ManagersTable innerJoin UsersTable)

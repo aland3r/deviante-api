@@ -1,6 +1,7 @@
 package com.deviante
 
 import com.deviante.dto.CreateActivityRequest
+import com.deviante.dto.DeleteProcessRequest
 import com.deviante.dto.ErrorResponse
 import com.deviante.dto.EventLogUploadResponse
 import com.deviante.dto.MapOperationRequest
@@ -10,6 +11,7 @@ import com.deviante.dto.UnmappedOperationResponse
 import com.deviante.dto.UpdateActivityRequest
 import com.deviante.dto.UpdateManagerRequest
 import com.deviante.dto.UpdateProcessRequest
+import com.deviante.dto.validateProcessDeletion
 import com.deviante.dto.toResponse
 import com.deviante.model.ProcessRecord
 import com.deviante.repository.ActivitiesRepository
@@ -43,12 +45,12 @@ private suspend fun ApplicationCall.requireProcess(
     processId: UUID,
 ): ProcessRecord? {
     val supabaseUser = requireSupabaseUser(authClient) ?: return null
-    val manager = managerRepository.findOrCreateForSupabaseUser(
+    managerRepository.findOrCreateForSupabaseUser(
         supabaseUser.id,
         supabaseUser.email,
         supabaseUser.fullNameHint,
     )
-    val process = processRepository.findByIdForManager(processId, manager.id)
+    val process = processRepository.findById(processId)
     if (process == null) {
         respond(HttpStatusCode.NotFound, ErrorResponse("Processo não encontrado."))
         return null
@@ -150,16 +152,12 @@ fun Application.configureRouting() {
             route("/processes") {
                 get {
                     val supabaseUser = call.requireSupabaseUser(authClient) ?: return@get
-                    val manager = managerRepository.findOrCreateForSupabaseUser(
+                    managerRepository.findOrCreateForSupabaseUser(
                         supabaseUser.id,
                         supabaseUser.email,
                         supabaseUser.fullNameHint,
                     )
-                    // Owner/mentor see ALL processes; regular managers see only their own
-                    val processes = processRepository.listForManager(
-                        manager.id,
-                        isOwnerOrMentor = manager.isOwnerOrMentor()
-                    ).map { it.toResponse() }
+                    val processes = processRepository.listAll().map { it.toResponse() }
                     call.respond(processes)
                 }
 
@@ -181,12 +179,12 @@ fun Application.configureRouting() {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
                         return@get
                     }
-                    val manager = managerRepository.findOrCreateForSupabaseUser(
+                    managerRepository.findOrCreateForSupabaseUser(
                         supabaseUser.id,
                         supabaseUser.email,
                         supabaseUser.fullNameHint,
                     )
-                    val process = processRepository.findByIdForManager(id, manager.id)
+                    val process = processRepository.findById(id)
                     if (process == null) {
                         call.respond(HttpStatusCode.NotFound, ErrorResponse("Processo não encontrado."))
                         return@get
@@ -219,14 +217,13 @@ fun Application.configureRouting() {
                         return@put
                     }
 
-                    val manager = managerRepository.findOrCreateForSupabaseUser(
+                    managerRepository.findOrCreateForSupabaseUser(
                         supabaseUser.id,
                         supabaseUser.email,
                         supabaseUser.fullNameHint,
                     )
                     val updated = processRepository.update(
                         id = id,
-                        managerId = manager.id,
                         name = body.name.trim(),
                         companyName = body.companyName.trim(),
                         description = body.description.trim(),
@@ -251,7 +248,31 @@ fun Application.configureRouting() {
                         supabaseUser.email,
                         supabaseUser.fullNameHint,
                     )
-                    val deleted = processRepository.delete(id, manager.id)
+                    if (!manager.isOwner()) {
+                        call.respond(
+                            HttpStatusCode.Forbidden,
+                            ErrorResponse("Somente o proprietário pode excluir processos."),
+                        )
+                        return@delete
+                    }
+
+                    val process = processRepository.findById(id)
+                    if (process == null) {
+                        call.respond(HttpStatusCode.NotFound, ErrorResponse("Processo não encontrado."))
+                        return@delete
+                    }
+
+                    val body = call.receive<DeleteProcessRequest>()
+                    val fieldErrors = validateProcessDeletion(body, process.name)
+                    if (fieldErrors.isNotEmpty()) {
+                        call.respond(
+                            HttpStatusCode.BadRequest,
+                            ErrorResponse("Confirme a exclusão do processo.", fieldErrors),
+                        )
+                        return@delete
+                    }
+
+                    val deleted = processRepository.delete(id)
                     if (!deleted) {
                         call.respond(HttpStatusCode.NotFound, ErrorResponse("Processo não encontrado."))
                         return@delete

@@ -5,7 +5,6 @@ import com.deviante.model.ProcessRecord
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
-import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.selectAll
@@ -17,23 +16,17 @@ import java.util.UUID
 private const val DEFAULT_PROCESS_NAME = "Untitled"
 
 class ProcessRepository {
-    fun listForManager(managerId: UUID, isOwnerOrMentor: Boolean = false): List<ProcessRecord> = transaction {
-        val query = if (isOwnerOrMentor) {
-            // Owner/mentor sees ALL processes
-            ProcessesTable.selectAll()
-        } else {
-            // Regular manager sees only their own processes
-            ProcessesTable.selectAll().where { ProcessesTable.managerId eq managerId }
-        }
-        query
+    fun listAll(): List<ProcessRecord> = transaction {
+        ProcessesTable
+            .selectAll()
             .orderBy(ProcessesTable.updatedAt, SortOrder.DESC)
             .map { it.toProcessRecord() }
     }
 
-    fun findByIdForManager(id: UUID, managerId: UUID): ProcessRecord? = transaction {
+    fun findById(id: UUID): ProcessRecord? = transaction {
         ProcessesTable
             .selectAll()
-            .where { (ProcessesTable.id eq id) and (ProcessesTable.managerId eq managerId) }
+            .where { ProcessesTable.id eq id }
             .limit(1)
             .firstOrNull()
             ?.toProcessRecord()
@@ -69,14 +62,13 @@ class ProcessRepository {
 
     fun update(
         id: UUID,
-        managerId: UUID,
         name: String,
         companyName: String,
         description: String,
         sector: String,
     ): ProcessRecord? = transaction {
         val now = OffsetDateTime.now()
-        val updated = ProcessesTable.update({ (ProcessesTable.id eq id) and (ProcessesTable.managerId eq managerId) }) {
+        val updated = ProcessesTable.update({ ProcessesTable.id eq id }) {
             it[ProcessesTable.name] = name
             it[ProcessesTable.companyName] = companyName
             it[ProcessesTable.description] = description
@@ -85,11 +77,11 @@ class ProcessRepository {
         }
         if (updated == 0) return@transaction null
 
-        findByIdForManager(id, managerId)
+        findById(id)
     }
 
-    fun delete(id: UUID, managerId: UUID): Boolean = transaction {
-        ProcessesTable.deleteWhere { (ProcessesTable.id eq id) and (ProcessesTable.managerId eq managerId) } > 0
+    fun delete(id: UUID): Boolean = transaction {
+        ProcessesTable.deleteWhere { ProcessesTable.id eq id } > 0
     }
 
     private fun ResultRow.toProcessRecord() = ProcessRecord(

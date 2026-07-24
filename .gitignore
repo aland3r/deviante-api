@@ -21,3 +21,4 @@ Thumbs.db
 
 # Local dev server logs
 _dev-server.*.log
+.ktor.*.log

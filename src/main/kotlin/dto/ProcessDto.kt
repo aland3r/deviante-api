@@ -23,11 +23,31 @@ data class UpdateProcessRequest(
     val sector: String = "",
 )
 
+const val PROCESS_DELETE_CONFIRMATION_PHRASE = "quero excluir este processo"
+
+@Serializable
+data class DeleteProcessRequest(
+    val processName: String,
+    val confirmationPhrase: String,
+)
+
 @Serializable
 data class ErrorResponse(
     val message: String,
     val fieldErrors: Map<String, String> = emptyMap(),
 )
+
+fun validateProcessDeletion(
+    request: DeleteProcessRequest,
+    expectedProcessName: String,
+): Map<String, String> = buildMap {
+    if (request.processName != expectedProcessName) {
+        put("processName", "Digite exatamente o nome do processo.")
+    }
+    if (request.confirmationPhrase != PROCESS_DELETE_CONFIRMATION_PHRASE) {
+        put("confirmationPhrase", "Digite exatamente a frase de confirmação.")
+    }
+}
 
 fun ProcessRecord.toResponse() = ProcessResponse(
     id = id.toString(),
