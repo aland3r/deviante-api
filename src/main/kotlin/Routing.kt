@@ -1,12 +1,14 @@
 package com.deviante
 
 import com.deviante.dto.CreateActivityRequest
+import com.deviante.dto.AnalysisDriftResponse
 import com.deviante.dto.DeleteProcessRequest
 import com.deviante.dto.ErrorResponse
 import com.deviante.dto.EventLogUploadResponse
 import com.deviante.dto.MapOperationRequest
 import com.deviante.dto.ResolveMappingRequest
 import com.deviante.dto.ResolveMappingResponse
+import com.deviante.dto.ProcessAnalysisResponse
 import com.deviante.dto.UnmappedOperationResponse
 import com.deviante.dto.UpdateActivityRequest
 import com.deviante.dto.UpdateManagerRequest
@@ -15,6 +17,7 @@ import com.deviante.dto.validateProcessDeletion
 import com.deviante.dto.toResponse
 import com.deviante.model.ProcessRecord
 import com.deviante.repository.ActivitiesRepository
+import com.deviante.repository.AnalysisRepository
 import com.deviante.repository.EventLogIngestionRepository
 import com.deviante.repository.EventLogsRepository
 import com.deviante.repository.ManagerRepository
@@ -101,6 +104,7 @@ fun Application.configureRouting() {
     val ingestionRepository = EventLogIngestionRepository()
     val mappingRepository = MappingRepository()
     val graphRepository = ProcessGraphRepository()
+    val analysisRepository = AnalysisRepository()
     val miningClient = configureMiningClient()
 
     routing {
@@ -493,6 +497,93 @@ fun Application.configureRouting() {
                 }
             }
 
+            route("/processes/{processId}/analysis") {
+                post {
+                    val processId = call.parameters["processId"]?.let(::runCatchingUuid)
+                    if (processId == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
+                        return@post
+                    }
+                    if (call.requireProcess(authClient, managerRepository, processRepository, processId) == null) {
+                        return@post
+                    }
+
+                    val series = analysisRepository.latestSeries(processId)
+                    if (series == null) {
+                        call.respond(
+                            HttpStatusCode.UnprocessableEntity,
+                            ErrorResponse("Envie e processe um log antes de executar a análise."),
+                        )
+                        return@post
+                    }
+                    if (series.points.size < 32) {
+                        call.respond(
+                            HttpStatusCode.UnprocessableEntity,
+                            ErrorResponse(
+                                "A análise exige ao menos 32 traces com duração válida; " +
+                                    "este log possui ${series.points.size}.",
+                            ),
+                        )
+                        return@post
+                    }
+
+                    val detection = try {
+                        miningClient.detect(series.points.map { it.durationSeconds })
+                    } catch (err: MiningAnalysisException) {
+                        call.respond(
+                            HttpStatusCode.UnprocessableEntity,
+                            ErrorResponse(err.message ?: "Não foi possível analisar os traces."),
+                        )
+                        return@post
+                    } catch (err: MiningUnavailableException) {
+                        call.respond(
+                            HttpStatusCode.ServiceUnavailable,
+                            ErrorResponse(err.message ?: "Serviço de análise indisponível."),
+                        )
+                        return@post
+                    }
+
+                    val drifts = detection.drifts.mapNotNull { detected ->
+                        val point = series.points.getOrNull(detected.index) ?: return@mapNotNull null
+                        val before = series.points
+                            .subList((detected.index - 16).coerceAtLeast(0), detected.index)
+                            .map { it.durationSeconds }
+                        val after = series.points
+                            .subList(detected.index, (detected.index + 16).coerceAtMost(series.points.size))
+                            .map { it.durationSeconds }
+                        val beforeMean = before.averageOrZero()
+                        val afterMean = after.averageOrZero()
+
+                        AnalysisDriftResponse(
+                            index = point.index,
+                            traceId = point.traceId,
+                            caseId = point.caseId,
+                            durationSeconds = point.durationSeconds,
+                            beforeMeanSeconds = beforeMean,
+                            afterMeanSeconds = afterMean,
+                            magnitudePercent = if (beforeMean == 0.0) {
+                                0.0
+                            } else {
+                                (afterMean - beforeMean) * 100.0 / beforeMean
+                            },
+                            windowWidth = detected.width,
+                            estimationSeconds = detected.estimation,
+                        )
+                    }
+
+                    call.respond(
+                        ProcessAnalysisResponse(
+                            eventLog = series.eventLog.toResponse(),
+                            method = detection.method,
+                            delta = detection.delta,
+                            traceCount = series.points.size,
+                            points = series.points,
+                            drifts = drifts,
+                        ),
+                    )
+                }
+            }
+
             route("/processes/{processId}/event-logs") {
                 get {
                     val processId = call.parameters["processId"]?.let(::runCatchingUuid)
@@ -687,6 +778,9 @@ fun Application.configureRouting() {
         }
     }
 }
+
+private fun List<Double>.averageOrZero(): Double =
+    if (isEmpty()) 0.0 else average()
 
 private fun runCatchingUuid(value: String): UUID? = try {
     UUID.fromString(value)

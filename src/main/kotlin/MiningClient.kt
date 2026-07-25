@@ -11,6 +11,7 @@ import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
@@ -62,6 +63,31 @@ data class ParsedLogDto(
 
 @Serializable
 private data class MiningErrorDto(val detail: String? = null)
+
+class MiningAnalysisException(message: String) : RuntimeException(message)
+
+@Serializable
+private data class DetectSeriesRequest(
+    val values: List<Double>,
+    val delta: Double,
+)
+
+@Serializable
+data class DetectedDriftDto(
+    val index: Int,
+    val value: Double,
+    val width: Double,
+    val estimation: Double,
+)
+
+@Serializable
+data class DetectSeriesResponse(
+    val method: String,
+    val delta: Double,
+    @SerialName("observation_count")
+    val observationCount: Int,
+    val drifts: List<DetectedDriftDto>,
+)
 
 /** The uploaded file was unreadable — the Manager can fix it and retry. */
 class MiningParseException(message: String) : RuntimeException(message)
@@ -121,6 +147,32 @@ class MiningClient(private val baseUrl: String) {
         if (!response.status.isSuccess()) {
             logger.error("[MiningClient] parse failed: ${response.status} ${response.bodyAsText().take(500)}")
             throw MiningUnavailableException("Falha ao analisar o log (${response.status.value}).")
+        }
+
+        return response.body()
+    }
+
+    suspend fun detect(values: List<Double>, delta: Double = 0.002): DetectSeriesResponse {
+        val response = try {
+            client.post("$baseUrl/detect") {
+                contentType(ContentType.Application.Json)
+                setBody(DetectSeriesRequest(values, delta))
+            }
+        } catch (err: Exception) {
+            logger.error("[MiningClient] $baseUrl unreachable", err)
+            throw MiningUnavailableException(
+                "O serviço de detecção de desvios não respondeu. Verifique se ele está no ar.",
+            )
+        }
+
+        if (response.status == HttpStatusCode.UnprocessableEntity) {
+            val detail = runCatching { response.body<MiningErrorDto>().detail }.getOrNull()
+            throw MiningAnalysisException(detail ?: "Não foi possível analisar a série de traces.")
+        }
+
+        if (!response.status.isSuccess()) {
+            logger.error("[MiningClient] detect failed: ${response.status} ${response.bodyAsText().take(500)}")
+            throw MiningUnavailableException("Falha ao detectar desvios (${response.status.value}).")
         }
 
         return response.body()
