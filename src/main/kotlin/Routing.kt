@@ -283,11 +283,23 @@ fun Application.configureRouting() {
 
             route("/activities") {
                 get {
+                    val supabaseUser = call.requireSupabaseUser(authClient) ?: return@get
+                    managerRepository.findOrCreateForSupabaseUser(
+                        supabaseUser.id,
+                        supabaseUser.email,
+                        supabaseUser.fullNameHint,
+                    )
                     val activities = activitiesRepository.listAll().map { it.toResponse() }
                     call.respond(activities)
                 }
 
                 post {
+                    val supabaseUser = call.requireSupabaseUser(authClient) ?: return@post
+                    managerRepository.findOrCreateForSupabaseUser(
+                        supabaseUser.id,
+                        supabaseUser.email,
+                        supabaseUser.fullNameHint,
+                    )
                     val body = call.receive<CreateActivityRequest>()
 
                     val fieldErrors = mutableMapOf<String, String>()
@@ -305,6 +317,12 @@ fun Application.configureRouting() {
                 }
 
                 get("/{id}") {
+                    val supabaseUser = call.requireSupabaseUser(authClient) ?: return@get
+                    managerRepository.findOrCreateForSupabaseUser(
+                        supabaseUser.id,
+                        supabaseUser.email,
+                        supabaseUser.fullNameHint,
+                    )
                     val id = call.parameters["id"]?.let(::runCatchingUuid)
                     if (id == null) {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de atividade inválido."))
@@ -319,6 +337,12 @@ fun Application.configureRouting() {
                 }
 
                 put("/{id}") {
+                    val supabaseUser = call.requireSupabaseUser(authClient) ?: return@put
+                    managerRepository.findOrCreateForSupabaseUser(
+                        supabaseUser.id,
+                        supabaseUser.email,
+                        supabaseUser.fullNameHint,
+                    )
                     val id = call.parameters["id"]?.let(::runCatchingUuid)
                     if (id == null) {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de atividade inválido."))
@@ -343,6 +367,72 @@ fun Application.configureRouting() {
                         return@put
                     }
                     call.respond(updated.toResponse())
+                }
+            }
+
+            /**
+             * UC3 — the manually defined activity set for one process.
+             *
+             * This model is intentionally separate from `/graph`: membership
+             * expresses what the user designed, while graph nodes and metrics
+             * remain evidence derived from an uploaded log.
+             */
+            route("/processes/{processId}/activities") {
+                get {
+                    val processId = call.parameters["processId"]?.let(::runCatchingUuid)
+                    if (processId == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
+                        return@get
+                    }
+                    if (call.requireProcess(authClient, managerRepository, processRepository, processId) == null) {
+                        return@get
+                    }
+
+                    call.respond(activitiesRepository.listForProcess(processId).map { it.toResponse() })
+                }
+
+                put("/{activityId}") {
+                    val processId = call.parameters["processId"]?.let(::runCatchingUuid)
+                    val activityId = call.parameters["activityId"]?.let(::runCatchingUuid)
+                    if (processId == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
+                        return@put
+                    }
+                    if (activityId == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de atividade inválido."))
+                        return@put
+                    }
+                    if (call.requireProcess(authClient, managerRepository, processRepository, processId) == null) {
+                        return@put
+                    }
+
+                    val activity = activitiesRepository.findById(activityId)
+                    if (activity == null) {
+                        call.respond(HttpStatusCode.NotFound, ErrorResponse("Atividade não encontrada."))
+                        return@put
+                    }
+
+                    activitiesRepository.linkToProcess(processId, activityId)
+                    call.respond(activity.toResponse())
+                }
+
+                delete("/{activityId}") {
+                    val processId = call.parameters["processId"]?.let(::runCatchingUuid)
+                    val activityId = call.parameters["activityId"]?.let(::runCatchingUuid)
+                    if (processId == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
+                        return@delete
+                    }
+                    if (activityId == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de atividade inválido."))
+                        return@delete
+                    }
+                    if (call.requireProcess(authClient, managerRepository, processRepository, processId) == null) {
+                        return@delete
+                    }
+
+                    activitiesRepository.unlinkFromProcess(processId, activityId)
+                    call.respond(HttpStatusCode.NoContent)
                 }
             }
 

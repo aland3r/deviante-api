@@ -7,7 +7,10 @@ import org.jetbrains.exposed.sql.JoinType
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.and
+import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.insert
+import org.jetbrains.exposed.sql.insertIgnore
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.jetbrains.exposed.sql.update
@@ -27,6 +30,7 @@ class ActivitiesRepository {
             .join(ActivitiesTable, JoinType.INNER, ProcessActivitiesTable.activityId, ActivitiesTable.id)
             .selectAll()
             .where { ProcessActivitiesTable.processId eq processId }
+            .orderBy(ActivitiesTable.name, SortOrder.ASC)
             .map { it.toActivityRecord() }
     }
 
@@ -74,11 +78,18 @@ class ActivitiesRepository {
 
     fun linkToProcess(processId: UUID, activityId: UUID): Boolean = transaction {
         val now = OffsetDateTime.now()
-        ProcessActivitiesTable.insert {
+        ProcessActivitiesTable.insertIgnore {
             it[ProcessActivitiesTable.processId] = processId
             it[ProcessActivitiesTable.activityId] = activityId
             it[ProcessActivitiesTable.createdAt] = now
         }.insertedCount > 0
+    }
+
+    fun unlinkFromProcess(processId: UUID, activityId: UUID): Boolean = transaction {
+        ProcessActivitiesTable.deleteWhere {
+            (ProcessActivitiesTable.processId eq processId) and
+                (ProcessActivitiesTable.activityId eq activityId)
+        } > 0
     }
 
     private fun ResultRow.toActivityRecord() = ActivityRecord(
