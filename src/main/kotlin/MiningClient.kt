@@ -75,6 +75,8 @@ private data class DetectSeriesRequest(
 @Serializable
 data class DetectedDriftDto(
     val index: Int,
+    @SerialName("anomaly_start_index")
+    val anomalyStartIndex: Int,
     val value: Double,
     val width: Double,
     val estimation: Double,
@@ -86,6 +88,12 @@ data class DetectSeriesResponse(
     val delta: Double,
     @SerialName("observation_count")
     val observationCount: Int,
+    @SerialName("smoothing_window")
+    val smoothingWindow: Int,
+    @SerialName("processed_values")
+    val processedValues: List<Double>,
+    @SerialName("outlier_indices")
+    val outlierIndices: List<Int>,
     val drifts: List<DetectedDriftDto>,
 )
 

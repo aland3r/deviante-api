@@ -578,17 +578,26 @@ fun Application.configureRouting() {
 
                     val drifts = detection.drifts.mapNotNull { detected ->
                         val point = series.points.getOrNull(detected.index) ?: return@mapNotNull null
-                        val before = series.points
-                            .subList((detected.index - 16).coerceAtLeast(0), detected.index)
-                            .map { it.durationSeconds }
-                        val after = series.points
-                            .subList(detected.index, (detected.index + 16).coerceAtMost(series.points.size))
-                            .map { it.durationSeconds }
+                        val anomalyStart = series.points
+                            .getOrNull(detected.anomalyStartIndex)
+                            ?.index
+                            ?: point.index
+                        val comparisonWidth = detected.width.toInt().coerceAtLeast(1)
+                        val before = detection.processedValues.subList(
+                            (detected.anomalyStartIndex - comparisonWidth).coerceAtLeast(0),
+                            detected.anomalyStartIndex,
+                        )
+                        val after = detection.processedValues.subList(
+                            detected.anomalyStartIndex,
+                            (detected.index + 1).coerceAtMost(detection.processedValues.size),
+                        )
                         val beforeMean = before.averageOrZero()
                         val afterMean = after.averageOrZero()
 
                         AnalysisDriftResponse(
                             index = point.index,
+                            anomalyStartIndex = anomalyStart,
+                            detectionDelayTraces = point.index - anomalyStart,
                             traceId = point.traceId,
                             caseId = point.caseId,
                             durationSeconds = point.durationSeconds,
@@ -610,6 +619,11 @@ fun Application.configureRouting() {
                             method = detection.method,
                             delta = detection.delta,
                             traceCount = series.points.size,
+                            smoothingWindow = detection.smoothingWindow,
+                            processedValues = detection.processedValues,
+                            outlierIndexes = detection.outlierIndices.mapNotNull { index ->
+                                series.points.getOrNull(index)?.index
+                            },
                             points = series.points,
                             drifts = drifts,
                         ),

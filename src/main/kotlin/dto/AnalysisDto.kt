@@ -14,6 +14,8 @@ data class AnalysisTracePointResponse(
 @Serializable
 data class AnalysisDriftResponse(
     val index: Int,
+    val anomalyStartIndex: Int,
+    val detectionDelayTraces: Int,
     val traceId: String,
     val caseId: String,
     val durationSeconds: Double,
@@ -30,6 +32,9 @@ data class ProcessAnalysisResponse(
     val method: String,
     val delta: Double,
     val traceCount: Int,
+    val smoothingWindow: Int,
+    val processedValues: List<Double>,
+    val outlierIndexes: List<Int>,
     val points: List<AnalysisTracePointResponse>,
     val drifts: List<AnalysisDriftResponse>,
 )
