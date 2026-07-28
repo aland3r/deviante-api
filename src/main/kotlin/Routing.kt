@@ -8,6 +8,7 @@ import com.deviante.dto.EventLogUploadResponse
 import com.deviante.dto.MapOperationRequest
 import com.deviante.dto.ResolveMappingRequest
 import com.deviante.dto.ResolveMappingResponse
+import com.deviante.dto.RenameProcessRequest
 import com.deviante.dto.ProcessAnalysisResponse
 import com.deviante.dto.UnmappedOperationResponse
 import com.deviante.dto.UpdateActivityRequest
@@ -236,6 +237,38 @@ fun Application.configureRouting() {
                     if (updated == null) {
                         call.respond(HttpStatusCode.NotFound, ErrorResponse("Processo não encontrado."))
                         return@put
+                    }
+                    call.respond(updated.toResponse())
+                }
+
+                patch("/{id}/name") {
+                    val id = call.parameters["id"]?.let(::runCatchingUuid)
+                    if (id == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
+                        return@patch
+                    }
+                    if (call.requireProcess(authClient, managerRepository, processRepository, id) == null) {
+                        return@patch
+                    }
+
+                    val name = call.receive<RenameProcessRequest>().name.trim()
+                    val nameError = when {
+                        name.isBlank() -> "O nome do processo não pode ficar em branco."
+                        name.length > 100 -> "O nome do processo deve ter no máximo 100 caracteres."
+                        else -> null
+                    }
+                    if (nameError != null) {
+                        call.respond(
+                            HttpStatusCode.BadRequest,
+                            ErrorResponse("Corrija o nome do processo.", mapOf("name" to nameError)),
+                        )
+                        return@patch
+                    }
+
+                    val updated = processRepository.updateName(id, name)
+                    if (updated == null) {
+                        call.respond(HttpStatusCode.NotFound, ErrorResponse("Processo não encontrado."))
+                        return@patch
                     }
                     call.respond(updated.toResponse())
                 }

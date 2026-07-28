@@ -23,6 +23,11 @@ data class UpdateProcessRequest(
     val sector: String = "",
 )
 
+@Serializable
+data class RenameProcessRequest(
+    val name: String,
+)
+
 const val PROCESS_DELETE_CONFIRMATION_PHRASE = "quero excluir este processo"
 
 @Serializable

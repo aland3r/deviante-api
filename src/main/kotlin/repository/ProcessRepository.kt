@@ -80,6 +80,16 @@ class ProcessRepository {
         findById(id)
     }
 
+    fun updateName(id: UUID, name: String): ProcessRecord? = transaction {
+        val updated = ProcessesTable.update({ ProcessesTable.id eq id }) {
+            it[ProcessesTable.name] = name
+            it[ProcessesTable.updatedAt] = OffsetDateTime.now()
+        }
+        if (updated == 0) return@transaction null
+
+        findById(id)
+    }
+
     fun delete(id: UUID): Boolean = transaction {
         ProcessesTable.deleteWhere { ProcessesTable.id eq id } > 0
     }
