@@ -1,0 +1,6 @@
+.git
+.gradle
+.env
+build
+bin
+pm4py-release
