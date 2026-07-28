@@ -47,8 +47,6 @@ class ProcessGraphRepository {
         const val START_ID = "__start__"
         const val END_ID = "__end__"
         const val HISTOGRAM_BUCKETS = 6
-        /** Cases listed per variant in the panel; the rest stay behind the count. */
-        const val CASES_PER_VARIANT = 8
     }
 
     /** One event of one trace, already resolved to the node it belongs to. */
@@ -218,7 +216,6 @@ class ProcessGraphRepository {
                 medianDurationSeconds = groupDurations.median(),
                 cases = group
                     .sortedByDescending { it.durationSeconds ?: 0.0 }
-                    .take(CASES_PER_VARIANT)
                     .map { trace ->
                         TraceCaseResponse(
                             id = trace.id.toString(),
