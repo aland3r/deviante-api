@@ -2,6 +2,7 @@ package com.deviante
 
 import com.deviante.dto.CreateActivityRequest
 import com.deviante.dto.AnalysisDriftResponse
+import com.deviante.dto.CreateAnalysisRequest
 import com.deviante.dto.DeleteProcessRequest
 import com.deviante.dto.ErrorResponse
 import com.deviante.dto.EventLogUploadResponse
@@ -16,6 +17,7 @@ import com.deviante.dto.UpdateManagerRequest
 import com.deviante.dto.UpdateProcessRequest
 import com.deviante.dto.validateProcessDeletion
 import com.deviante.dto.toResponse
+import com.deviante.dto.toSummaryResponse
 import com.deviante.model.ProcessRecord
 import com.deviante.repository.ActivitiesRepository
 import com.deviante.repository.AnalysisRepository
@@ -537,9 +539,10 @@ fun Application.configureRouting() {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
                         return@post
                     }
-                    if (call.requireProcess(authClient, managerRepository, processRepository, processId) == null) {
-                        return@post
-                    }
+                    val process = call.requireProcess(authClient, managerRepository, processRepository, processId)
+                        ?: return@post
+
+                    val analysisId = call.request.queryParameters["analysisId"]?.let(::runCatchingUuid)
 
                     val series = analysisRepository.latestSeries(processId)
                     if (series == null) {
@@ -613,21 +616,95 @@ fun Application.configureRouting() {
                         )
                     }
 
+                    val response = ProcessAnalysisResponse(
+                        eventLog = series.eventLog.toResponse(),
+                        method = detection.method,
+                        delta = detection.delta,
+                        traceCount = series.points.size,
+                        smoothingWindow = detection.smoothingWindow,
+                        processedValues = detection.processedValues,
+                        outlierIndexes = detection.outlierIndices.mapNotNull { index ->
+                            series.points.getOrNull(index)?.index
+                        },
+                        points = series.points,
+                        drifts = drifts,
+                    )
+
+                    val saved = analysisRepository.saveRun(
+                        processId = processId,
+                        processName = process.name.ifBlank { "Processo sem nome" },
+                        analysisId = analysisId,
+                        response = response,
+                    )
+
                     call.respond(
-                        ProcessAnalysisResponse(
-                            eventLog = series.eventLog.toResponse(),
-                            method = detection.method,
-                            delta = detection.delta,
-                            traceCount = series.points.size,
-                            smoothingWindow = detection.smoothingWindow,
-                            processedValues = detection.processedValues,
-                            outlierIndexes = detection.outlierIndices.mapNotNull { index ->
-                                series.points.getOrNull(index)?.index
-                            },
-                            points = series.points,
-                            drifts = drifts,
+                        response.copy(
+                            id = saved.id.toString(),
+                            name = saved.name,
+                            processId = processId.toString(),
+                            processName = saved.processName,
                         ),
                     )
+                }
+            }
+
+            route("/analyses") {
+                get {
+                    val supabaseUser = call.requireSupabaseUser(authClient) ?: return@get
+                    managerRepository.findOrCreateForSupabaseUser(
+                        supabaseUser.id,
+                        supabaseUser.email,
+                        supabaseUser.fullNameHint,
+                    )
+                    call.respond(analysisRepository.listSummaries().map { it.toSummaryResponse() })
+                }
+
+                post {
+                    val supabaseUser = call.requireSupabaseUser(authClient) ?: return@post
+                    managerRepository.findOrCreateForSupabaseUser(
+                        supabaseUser.id,
+                        supabaseUser.email,
+                        supabaseUser.fullNameHint,
+                    )
+                    val body = call.receive<CreateAnalysisRequest>()
+                    val processId = runCatchingUuid(body.processId)
+                    if (processId == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
+                        return@post
+                    }
+                    val process = call.requireProcess(authClient, managerRepository, processRepository, processId)
+                        ?: return@post
+                    val stub = analysisRepository.createStub(
+                        processId = processId,
+                        processName = process.name.ifBlank { "Processo sem nome" },
+                        name = body.name,
+                    )
+                    call.respond(HttpStatusCode.Created, stub.toSummaryResponse())
+                }
+
+                get("/{id}") {
+                    val supabaseUser = call.requireSupabaseUser(authClient) ?: return@get
+                    managerRepository.findOrCreateForSupabaseUser(
+                        supabaseUser.id,
+                        supabaseUser.email,
+                        supabaseUser.fullNameHint,
+                    )
+                    val id = call.parameters["id"]?.let(::runCatchingUuid)
+                    if (id == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de análise inválido."))
+                        return@get
+                    }
+                    val record = analysisRepository.findById(id)
+                    if (record == null) {
+                        call.respond(HttpStatusCode.NotFound, ErrorResponse("Análise não encontrada."))
+                        return@get
+                    }
+                    val saved = analysisRepository.decodeResult(record)
+                    if (saved != null) {
+                        call.respond(saved)
+                        return@get
+                    }
+                    call.respond(record.toSummaryResponse())
                 }
             }
 
