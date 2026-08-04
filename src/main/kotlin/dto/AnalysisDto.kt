@@ -82,6 +82,8 @@ data class ProcessAnalysisResponse(
      */
     val excludedActivityIds: List<String> = emptyList(),
     val excludedTraceIds: List<String> = emptyList(),
+    val linkedMachineIds: List<String> = emptyList(),
+    val linkedMachineNames: List<String> = emptyList(),
 )
 
 @Serializable

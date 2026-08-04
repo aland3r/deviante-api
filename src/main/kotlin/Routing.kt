@@ -1106,6 +1106,7 @@ fun Application.configureRouting() {
                         kind = if (excludedActivityIds.isEmpty()) "process" else "activity",
                     )
 
+                    val linkedMachines = maintenanceRepository.listProcessEquipment(processId)
                     val response = ProcessAnalysisResponse(
                         eventLog = series.eventLogs.first().toResponse(),
                         eventLogs = series.eventLogs.map { it.toResponse() },
@@ -1123,6 +1124,8 @@ fun Application.configureRouting() {
                         drifts = drifts,
                         excludedActivityIds = excludedActivityIds.map { it.toString() },
                         excludedTraceIds = excludedTraceIds.map { it.toString() },
+                        linkedMachineIds = linkedMachines.map { it.id },
+                        linkedMachineNames = linkedMachines.map { it.name },
                     )
 
                     val saved = analysisRepository.saveRun(
