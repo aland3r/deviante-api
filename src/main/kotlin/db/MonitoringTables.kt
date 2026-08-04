@@ -77,12 +77,33 @@ object MonitoringReadingsTable : Table(name = "monitoring_readings") {
     override val primaryKey = PrimaryKey(id)
 }
 
+object MonitoringAnalysesTable : Table(name = "monitoring_analyses") {
+    override val tableName = "deviante.monitoring_analyses"
+    val id = uuid("id")
+    val monitoringId = uuid("monitoring_id").references(MonitoringsTable.id)
+    val name = varchar("name", 200)
+    val description = text("description")
+    val status = varchar("status", 30)
+    val createdAt = timestampWithTimeZone("created_at")
+    val updatedAt = timestampWithTimeZone("updated_at")
+    override val primaryKey = PrimaryKey(id)
+}
+
+object MonitoringAnalysisMachinesTable : Table(name = "monitoring_analysis_machines") {
+    override val tableName = "deviante.monitoring_analysis_machines"
+    val monitoringAnalysisId = uuid("monitoring_analysis_id").references(MonitoringAnalysesTable.id)
+    val equipmentId = uuid("equipment_id").references(EquipmentTable.id)
+    val createdAt = timestampWithTimeZone("created_at")
+    override val primaryKey = PrimaryKey(monitoringAnalysisId, equipmentId)
+}
+
 object EquipmentAnalysisRunsTable : Table(name = "equipment_analysis_runs") {
     override val tableName = "deviante.equipment_analysis_runs"
     val id = uuid("id")
     val equipmentId = uuid("equipment_id").references(EquipmentTable.id)
     val monitoringId = uuid("monitoring_id").references(MonitoringsTable.id)
     val parameterId = uuid("parameter_id").references(MonitoringParametersTable.id)
+    val monitoringAnalysisId = uuid("monitoring_analysis_id").nullable().references(MonitoringAnalysesTable.id)
     val method = varchar("method", 50)
     val delta = double("delta")
     val treatment = varchar("treatment", 20)

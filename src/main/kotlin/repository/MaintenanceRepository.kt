@@ -30,6 +30,7 @@ data class StoredEquipmentAnalysis(
     val equipmentId: UUID,
     val monitoringId: UUID,
     val parameterId: UUID,
+    val monitoringAnalysisId: UUID?,
     val inputSha256: String,
     val resultJson: String,
     val provenanceJson: String,
@@ -290,7 +291,7 @@ class MaintenanceRepository {
     }
 
     fun saveAnalysis(
-        equipmentId: UUID, monitoringId: UUID, parameterId: UUID, method: String, delta: Double,
+        equipmentId: UUID, monitoringId: UUID, parameterId: UUID, monitoringAnalysisId: UUID?, method: String, delta: Double,
         treatment: String, observationCount: Int, inputSha256: String, resultJson: String,
         provenanceJson: String, rulValue: Double?, rulUnit: String, failureProbability: Double?,
         failureHorizonValue: Double?, failureHorizonUnit: String?, modelVersion: String?, recommendation: String?,
@@ -299,6 +300,7 @@ class MaintenanceRepository {
         EquipmentAnalysisRunsTable.insert {
             it[EquipmentAnalysisRunsTable.id] = id; it[EquipmentAnalysisRunsTable.equipmentId] = equipmentId
             it[EquipmentAnalysisRunsTable.monitoringId] = monitoringId; it[EquipmentAnalysisRunsTable.parameterId] = parameterId
+            it[EquipmentAnalysisRunsTable.monitoringAnalysisId] = monitoringAnalysisId
             it[EquipmentAnalysisRunsTable.method] = method; it[EquipmentAnalysisRunsTable.delta] = delta
             it[EquipmentAnalysisRunsTable.treatment] = treatment; it[EquipmentAnalysisRunsTable.observationCount] = observationCount
             it[EquipmentAnalysisRunsTable.inputSha256] = inputSha256; it[EquipmentAnalysisRunsTable.resultJson] = resultJson
@@ -311,7 +313,7 @@ class MaintenanceRepository {
             it[EquipmentAnalysisRunsTable.recommendationText] = recommendation?.trim()?.takeIf(String::isNotBlank)
             it[EquipmentAnalysisRunsTable.createdAt] = now
         }
-        StoredEquipmentAnalysis(id, equipmentId, monitoringId, parameterId, inputSha256, resultJson, provenanceJson, rulValue, rulUnit, failureProbability, failureHorizonValue, failureHorizonUnit, modelVersion, recommendation, now)
+        StoredEquipmentAnalysis(id, equipmentId, monitoringId, parameterId, monitoringAnalysisId, inputSha256, resultJson, provenanceJson, rulValue, rulUnit, failureProbability, failureHorizonValue, failureHorizonUnit, modelVersion, recommendation, now)
     }
 
     fun findAnalysis(id: UUID): StoredEquipmentAnalysis? = transaction {

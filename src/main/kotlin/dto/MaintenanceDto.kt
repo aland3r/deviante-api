@@ -154,6 +154,7 @@ data class EquipmentAnalysisResponse(
     val equipmentId: String,
     val monitoringId: String,
     val parameterId: String,
+    val monitoringAnalysisId: String? = null,
     val inputSha256: String,
     val result: DetectSeriesResponse,
     val provenance: AnalysisProvenanceResponse,
