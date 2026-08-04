@@ -1,6 +1,8 @@
 package com.deviante.repository
 
 import com.deviante.db.OperationsTable
+import com.deviante.db.EventLogsTable
+import com.deviante.db.ProcessesTable
 import com.deviante.model.OperationRecord
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder
@@ -14,6 +16,14 @@ import java.time.OffsetDateTime
 import java.util.UUID
 
 class OperationsRepository {
+    fun listForManager(managerId: UUID): List<OperationRecord> = transaction {
+        OperationsTable.innerJoin(EventLogsTable).innerJoin(ProcessesTable)
+            .selectAll()
+            .where { ProcessesTable.managerId eq managerId }
+            .orderBy(OperationsTable.occurrenceCount, SortOrder.DESC)
+            .map { it.toOperationRecord() }
+    }
+
     fun listForEventLog(eventLogId: UUID): List<OperationRecord> = transaction {
         OperationsTable
             .selectAll()

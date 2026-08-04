@@ -71,12 +71,15 @@ data class ProcessAnalysisResponse(
     val points: List<AnalysisTracePointResponse>,
     val drifts: List<AnalysisDriftResponse>,
     /**
-     * Trace indexes the Manager marked "pra sumir" — desconsiderados from the
-     * summary counts. Held on the persisted result so reopening an analysis
-     * restores exactly where the Manager left off, instead of recomputing.
-     * Empty on a fresh run; updated in place via the dismissed endpoint.
+     * The subtractive filter the Manager configured, persisted so reopening an
+     * analysis continues exactly where they left off. Everything is active by
+     * default (both empty). Deactivating an Activity drops its per-event
+     * duration from every trace's series value; deactivating traces removes
+     * those cases from the series. Held by stable id (not series index) so the
+     * selection survives a recompute that renumbers the points.
      */
-    val dismissedIndexes: List<Int> = emptyList(),
+    val excludedActivityIds: List<String> = emptyList(),
+    val excludedTraceIds: List<String> = emptyList(),
 )
 
 @Serializable
@@ -85,10 +88,23 @@ data class CreateAnalysisRequest(
     val name: String? = null,
 )
 
-/** Replaces the full set of desconsiderados on a run — see the dismissed endpoint. */
+/**
+ * Parameters for one analysis run. Absent fields keep the historical defaults:
+ * whole-trace duration (no exclusions), treated series, delta 0.002.
+ */
 @Serializable
-data class UpdateDismissedRequest(
-    val dismissedIndexes: List<Int> = emptyList(),
+data class RunAnalysisRequest(
+    val treatment: String = "treated",
+    val delta: Double? = null,
+    val excludedActivityIds: List<String> = emptyList(),
+    val excludedTraceIds: List<String> = emptyList(),
+)
+
+/** Replaces the persisted subtractive filter without recomputing the run. */
+@Serializable
+data class UpdateFilterRequest(
+    val excludedActivityIds: List<String> = emptyList(),
+    val excludedTraceIds: List<String> = emptyList(),
 )
 
 /** Dashboard card — no full series payload. */

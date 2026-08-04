@@ -56,10 +56,22 @@ class AnalysisRepository {
      * Either way the series is ordered by when the trace started, so the index
      * ADWIN reports is a position in time and not an arbitrary row order.
      */
+    /**
+     * Builds the series ADWIN consumes from the process's most recent log,
+     * under the Manager's subtractive filter.
+     *
+     * With [excludedActivityIds] empty the series is the **whole-trace
+     * duration** — the historical default. Excluding one or more Activities
+     * switches the value to the **sum of the per-event durations of the
+     * Activities still active**, so turning every Activity but one off yields
+     * that Activity's sojourn. [excludedTraceIds] then drops those cases from
+     * the series entirely; the surviving points are renumbered 1..n so ADWIN's
+     * index stays a contiguous position in time.
+     */
     fun latestSeries(
         processId: UUID,
-        operationId: UUID? = null,
-        activityId: UUID? = null,
+        excludedActivityIds: Set<UUID> = emptySet(),
+        excludedTraceIds: Set<UUID> = emptySet(),
     ): AnalysisSeries? = transaction {
         val log = EventLogsTable
             .selectAll()
@@ -73,23 +85,26 @@ class AnalysisRepository {
             ?.toEventLogRecord()
             ?: return@transaction null
 
-        if (operationId != null) {
-            return@transaction AnalysisSeries(
-                eventLog = log,
-                points = operationSeries(log.id, operationId),
-            )
+        val rawPoints = if (excludedActivityIds.isEmpty()) {
+            wholeTraceSeries(log.id)
+        } else {
+            activeActivitiesSeries(log.id, excludedActivityIds)
         }
 
-        if (activityId != null) {
-            return@transaction AnalysisSeries(
-                eventLog = log,
-                points = activitySeries(log.id, activityId),
-            )
-        }
+        // Drop the excluded cases and renumber, so a filtered run is not a
+        // series with gaps in its index.
+        val points = rawPoints
+            .filterNot { runCatching { UUID.fromString(it.traceId) }.getOrNull() in excludedTraceIds }
+            .mapIndexed { index, point -> point.copy(index = index + 1) }
 
+        AnalysisSeries(eventLog = log, points = points)
+    }
+
+    /** Whole-trace duration, one point per trace, in chronological order. */
+    private fun wholeTraceSeries(eventLogId: UUID): List<AnalysisTracePointResponse> {
         val rows = TracesTable
             .selectAll()
-            .where { TracesTable.eventLogId eq log.id }
+            .where { TracesTable.eventLogId eq eventLogId }
             .mapNotNull { row ->
                 val duration = row[TracesTable.durationSeconds]?.toDouble()
                 if (duration == null || !duration.isFinite() || duration < 0) {
@@ -108,76 +123,47 @@ class AnalysisRepository {
                     .thenBy { it.caseId },
             )
 
-        AnalysisSeries(
-            eventLog = log,
-            points = rows.mapIndexed { index, row ->
-                AnalysisTracePointResponse(
-                    index = index + 1,
-                    traceId = row.id.toString(),
-                    caseId = row.caseId,
-                    startedAt = row.startedAt?.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
-                    durationSeconds = row.durationSeconds,
-                )
-            },
-        )
-    }
-
-    /**
-     * One observation per trace: the sojourn time of [operationId] in it.
-     *
-     * A trace that never ran the operation contributes nothing — it is absent
-     * from the series rather than present as a zero, because a zero would read
-     * to ADWIN as an abrupt drop to idle. When the same operation occurs more
-     * than once in a trace the durations are summed, which matches how the
-     * research scripts collapse the lifecycle pairs of a repeated activity.
-     */
-    private fun operationSeries(eventLogId: UUID, operationId: UUID): List<AnalysisTracePointResponse> {
-        val operation = OperationsTable
-            .selectAll()
-            .where { OperationsTable.id eq operationId }
-            .firstOrNull()
-            ?: throw AnalysisSeriesException("Operação não encontrada neste log.")
-
-        if (operation[OperationsTable.eventLogId] != eventLogId) {
-            throw AnalysisSeriesException(
-                "A operação escolhida pertence a outro log de eventos. " +
-                    "Selecione uma operação do log mais recente do processo.",
+        return rows.mapIndexed { index, row ->
+            AnalysisTracePointResponse(
+                index = index + 1,
+                traceId = row.id.toString(),
+                caseId = row.caseId,
+                startedAt = row.startedAt?.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
+                durationSeconds = row.durationSeconds,
             )
         }
-
-        return aggregatedSeries(
-            eventLogId = eventLogId,
-            operationIds = listOf(operationId),
-            missingEventsMessage = "Nenhum evento desta operação foi encontrado no log.",
-            scopeNoun = "operação",
-        )
     }
 
     /**
-     * One observation per trace, aggregating the sojourn time of **every
-     * operation the Activity resolves to** (many raw aliases can map to one
-     * Activity). A trace that never ran any of them is absent from the series,
-     * for the same reason a single operation's zero would mislead ADWIN.
+     * Series value = sum of the per-event durations of every operation mapped
+     * to an Activity that is **not** excluded. A trace running none of them is
+     * absent rather than a zero, which ADWIN would misread as a drop to idle.
      */
-    private fun activitySeries(eventLogId: UUID, activityId: UUID): List<AnalysisTracePointResponse> {
+    private fun activeActivitiesSeries(
+        eventLogId: UUID,
+        excludedActivityIds: Set<UUID>,
+    ): List<AnalysisTracePointResponse> {
         val operationIds = OperationsTable
             .selectAll()
             .where {
                 (OperationsTable.eventLogId eq eventLogId) and
-                    (OperationsTable.activityId eq activityId)
+                    (OperationsTable.activityId.isNotNull())
             }
-            .map { it[OperationsTable.id] }
+            .mapNotNull { row ->
+                val activity = row[OperationsTable.activityId]
+                if (activity != null && activity !in excludedActivityIds) row[OperationsTable.id] else null
+            }
 
         if (operationIds.isEmpty()) {
             throw AnalysisSeriesException(
-                "Nenhuma operação deste log está mapeada para a atividade escolhida.",
+                "Deixe ao menos uma atividade ativa para analisar.",
             )
         }
 
         return aggregatedSeries(
             eventLogId = eventLogId,
             operationIds = operationIds,
-            missingEventsMessage = "Nenhum evento desta atividade foi encontrado no log.",
+            missingEventsMessage = "Nenhum evento das atividades ativas foi encontrado no log.",
             scopeNoun = "atividade",
         )
     }
@@ -185,7 +171,7 @@ class AnalysisRepository {
     /**
      * Sums the per-event durations of [operationIds] into one observation per
      * trace, ordered by when the trace started so ADWIN's index is a position
-     * in time. Shared by the operation and activity scopes.
+     * in time.
      */
     private fun aggregatedSeries(
         eventLogId: UUID,
@@ -348,11 +334,16 @@ class AnalysisRepository {
     }
 
     /**
-     * Persist the Manager's desconsiderados on an existing run without
-     * recomputing it: decode the stored result, replace [dismissedIndexes],
-     * and write it back. Returns false when there is no run to update yet.
+     * Persist the Manager's subtractive filter on an existing run without
+     * recomputing it: decode the stored result, replace the exclusion lists,
+     * and write it back. This is the "continue where I left off" selection,
+     * which the next run then applies. Returns false when there is no run yet.
      */
-    fun updateDismissed(id: UUID, dismissedIndexes: List<Int>): Boolean = transaction {
+    fun updateFilter(
+        id: UUID,
+        excludedActivityIds: List<String>,
+        excludedTraceIds: List<String>,
+    ): Boolean = transaction {
         val record = findById(id) ?: return@transaction false
         val decoded = decodeResult(record) ?: return@transaction false
         val payload = json.encodeToString(
@@ -361,7 +352,8 @@ class AnalysisRepository {
                 name = null,
                 processId = null,
                 processName = null,
-                dismissedIndexes = dismissedIndexes.distinct().sorted(),
+                excludedActivityIds = excludedActivityIds.distinct(),
+                excludedTraceIds = excludedTraceIds.distinct(),
             ),
         )
         AnalysesTable.update({ AnalysesTable.id eq id }) {

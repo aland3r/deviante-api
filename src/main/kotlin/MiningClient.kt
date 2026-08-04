@@ -99,6 +99,43 @@ data class DetectSeriesResponse(
     val drifts: List<DetectedDriftDto>,
 )
 
+@Serializable
+data class MaintenanceObservationRequest(
+    val machineOperating: Double,
+    val rawMaterialLoading: Double,
+    val shortDowntime: Double,
+    val driftDetected: Boolean = false,
+)
+
+@Serializable
+private data class MaintenancePredictionRequest(
+    val history: List<MaintenanceObservationRequest>,
+)
+
+@Serializable
+data class MaintenancePredictionProvenance(
+    val source: String,
+    val modelVersion: String,
+    val failureModel: String,
+    val rulModel: String,
+    val failureHorizonTraces: Int,
+    val rulWindowTraces: Int,
+    val trainingRunCount: Int,
+    val trainingObservationCount: Int,
+    val labelledFailureCount: Int,
+    val excludedFeatures: List<String> = emptyList(),
+    val trainingDatasets: List<String> = emptyList(),
+)
+
+@Serializable
+data class MaintenancePredictionResponse(
+    val failureProbability: Double,
+    val failureHorizonTraces: Int,
+    val rulTraces: Double,
+    val rulUnit: String = "traces",
+    val provenance: MaintenancePredictionProvenance,
+)
+
 /** The uploaded file was unreadable — the Manager can fix it and retry. */
 class MiningParseException(message: String) : RuntimeException(message)
 
@@ -189,6 +226,32 @@ class MiningClient(private val baseUrl: String) {
             throw MiningUnavailableException("Falha ao detectar desvios (${response.status.value}).")
         }
 
+        return response.body()
+    }
+
+    suspend fun predictMaintenance(
+        history: List<MaintenanceObservationRequest>,
+    ): MaintenancePredictionResponse {
+        val response = try {
+            client.post("$baseUrl/predict-maintenance") {
+                contentType(ContentType.Application.Json)
+                setBody(MaintenancePredictionRequest(history))
+            }
+        } catch (err: Exception) {
+            logger.error("[MiningClient] $baseUrl unreachable", err)
+            throw MiningUnavailableException(
+                "O serviÃ§o de prediÃ§Ã£o de manutenÃ§Ã£o nÃ£o respondeu.",
+            )
+        }
+
+        if (response.status == HttpStatusCode.UnprocessableEntity) {
+            val detail = runCatching { response.body<MiningErrorDto>().detail }.getOrNull()
+            throw MiningAnalysisException(detail ?: "Os dados nÃ£o suportam uma previsÃ£o confiÃ¡vel.")
+        }
+        if (!response.status.isSuccess()) {
+            logger.error("[MiningClient] prediction failed: ${response.status} ${response.bodyAsText().take(500)}")
+            throw MiningUnavailableException("Falha ao calcular RUL e probabilidade (${response.status.value}).")
+        }
         return response.body()
     }
 }
