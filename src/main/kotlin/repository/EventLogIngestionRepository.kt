@@ -97,6 +97,7 @@ class EventLogIngestionRepository {
             this[TraceEventsTable.operationId] = operationId
             this[TraceEventsTable.sequenceIndex] = event.sequenceIndex
             this[TraceEventsTable.occurredAt] = parseTimestamp(event.occurredAt)
+            this[TraceEventsTable.durationSeconds] = event.durationSeconds?.let { BigDecimal.valueOf(it) }
             this[TraceEventsTable.createdAt] = now
         }
 

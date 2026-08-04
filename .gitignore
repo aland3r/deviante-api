@@ -22,3 +22,9 @@ Thumbs.db
 # Local dev server logs
 _dev-server.*.log
 .ktor.*.log
+
+# Eclipse/IntelliJ compiled output
+bin/
+
+# Vendored pm4py research library (belongs to the mining service, not the API)
+pm4py-release/

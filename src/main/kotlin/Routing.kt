@@ -2,6 +2,7 @@ package com.deviante
 
 import com.deviante.dto.CreateActivityRequest
 import com.deviante.dto.AnalysisDriftResponse
+import com.deviante.dto.AnalysisScopeResponse
 import com.deviante.dto.CreateAnalysisRequest
 import com.deviante.dto.DeleteProcessRequest
 import com.deviante.dto.ErrorResponse
@@ -9,6 +10,7 @@ import com.deviante.dto.EventLogUploadResponse
 import com.deviante.dto.MapOperationRequest
 import com.deviante.dto.ResolveMappingRequest
 import com.deviante.dto.ResolveMappingResponse
+import com.deviante.dto.UpdateDismissedRequest
 import com.deviante.dto.RenameProcessRequest
 import com.deviante.dto.ProcessAnalysisResponse
 import com.deviante.dto.UnmappedOperationResponse
@@ -21,6 +23,7 @@ import com.deviante.dto.toSummaryResponse
 import com.deviante.model.ProcessRecord
 import com.deviante.repository.ActivitiesRepository
 import com.deviante.repository.AnalysisRepository
+import com.deviante.repository.AnalysisSeriesException
 import com.deviante.repository.EventLogIngestionRepository
 import com.deviante.repository.EventLogsRepository
 import com.deviante.repository.ManagerRepository
@@ -37,6 +40,7 @@ import io.ktor.server.routing.*
 import io.ktor.utils.io.*
 import io.ktor.utils.io.core.*
 import kotlinx.io.readByteArray
+import java.time.OffsetDateTime
 import java.util.UUID
 
 /**
@@ -544,7 +548,58 @@ fun Application.configureRouting() {
 
                     val analysisId = call.request.queryParameters["analysisId"]?.let(::runCatchingUuid)
 
-                    val series = analysisRepository.latestSeries(processId)
+                    // UC13. Absent parameters keep the historical behaviour:
+                    // whole-trace duration, treated series, delta 0.002.
+                    val rawOperationId = call.request.queryParameters["operationId"]?.takeIf { it.isNotBlank() }
+                    val operationId = rawOperationId?.let(::runCatchingUuid)
+                    if (rawOperationId != null && operationId == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de operação inválido."))
+                        return@post
+                    }
+
+                    val rawActivityId = call.request.queryParameters["activityId"]?.takeIf { it.isNotBlank() }
+                    val activityId = rawActivityId?.let(::runCatchingUuid)
+                    if (rawActivityId != null && activityId == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de atividade inválido."))
+                        return@post
+                    }
+                    if (operationId != null && activityId != null) {
+                        call.respond(
+                            HttpStatusCode.BadRequest,
+                            ErrorResponse("Escolha uma operação ou uma atividade, não ambas."),
+                        )
+                        return@post
+                    }
+
+                    val treatment = call.request.queryParameters["treatment"]?.lowercase() ?: "treated"
+                    if (treatment !in setOf("raw", "treated")) {
+                        call.respond(
+                            HttpStatusCode.BadRequest,
+                            ErrorResponse("Tratamento inválido: use 'raw' ou 'treated'."),
+                        )
+                        return@post
+                    }
+
+                    val delta = call.request.queryParameters["delta"]?.let { raw ->
+                        raw.toDoubleOrNull()?.takeIf { it > 0.0 && it < 1.0 }
+                            ?: run {
+                                call.respond(
+                                    HttpStatusCode.BadRequest,
+                                    ErrorResponse("δ inválido: informe um número entre 0 e 1."),
+                                )
+                                return@post
+                            }
+                    } ?: 0.002
+
+                    val series = try {
+                        analysisRepository.latestSeries(processId, operationId, activityId)
+                    } catch (err: AnalysisSeriesException) {
+                        call.respond(
+                            HttpStatusCode.UnprocessableEntity,
+                            ErrorResponse(err.message ?: "Não foi possível montar a série de análise."),
+                        )
+                        return@post
+                    }
                     if (series == null) {
                         call.respond(
                             HttpStatusCode.UnprocessableEntity,
@@ -564,7 +619,11 @@ fun Application.configureRouting() {
                     }
 
                     val detection = try {
-                        miningClient.detect(series.points.map { it.durationSeconds })
+                        miningClient.detect(
+                            values = series.points.map { it.durationSeconds },
+                            delta = delta,
+                            treatment = treatment,
+                        )
                     } catch (err: MiningAnalysisException) {
                         call.respond(
                             HttpStatusCode.UnprocessableEntity,
@@ -581,10 +640,24 @@ fun Application.configureRouting() {
 
                     val drifts = detection.drifts.mapNotNull { detected ->
                         val point = series.points.getOrNull(detected.index) ?: return@mapNotNull null
-                        val anomalyStart = series.points
-                            .getOrNull(detected.anomalyStartIndex)
-                            ?.index
-                            ?: point.index
+                        val anomalyStartPoint = series.points.getOrNull(detected.anomalyStartIndex)
+                        val anomalyStart = anomalyStartPoint?.index ?: point.index
+
+                        // The P-F interval in calendar time. Null when the log
+                        // carried no usable timestamps, which is honest: better
+                        // an absent date than one inferred from row order.
+                        val detectedAt = point.startedAt
+                        val anomalyStartedAt = anomalyStartPoint?.startedAt
+                        val delaySeconds = if (detectedAt != null && anomalyStartedAt != null) {
+                            runCatching {
+                                java.time.Duration.between(
+                                    OffsetDateTime.parse(anomalyStartedAt),
+                                    OffsetDateTime.parse(detectedAt),
+                                ).toMillis() / 1000.0
+                            }.getOrNull()
+                        } else {
+                            null
+                        }
                         val comparisonWidth = detected.width.toInt().coerceAtLeast(1)
                         val before = detection.processedValues.subList(
                             (detected.anomalyStartIndex - comparisonWidth).coerceAtLeast(0),
@@ -613,13 +686,32 @@ fun Application.configureRouting() {
                             },
                             windowWidth = detected.width,
                             estimationSeconds = detected.estimation,
+                            detectedAt = detectedAt,
+                            anomalyStartedAt = anomalyStartedAt,
+                            detectionDelaySeconds = delaySeconds,
                         )
+                    }
+
+                    val scope = when {
+                        operationId != null -> AnalysisScopeResponse(
+                            kind = "operation",
+                            operationId = operationId.toString(),
+                            operationLabel = operationsRepository.findById(operationId)?.rawLabel,
+                        )
+                        activityId != null -> AnalysisScopeResponse(
+                            kind = "activity",
+                            activityId = activityId.toString(),
+                            activityLabel = activitiesRepository.findById(activityId)?.name,
+                        )
+                        else -> AnalysisScopeResponse(kind = "process")
                     }
 
                     val response = ProcessAnalysisResponse(
                         eventLog = series.eventLog.toResponse(),
                         method = detection.method,
                         delta = detection.delta,
+                        treatment = detection.treatment,
+                        scope = scope,
                         traceCount = series.points.size,
                         smoothingWindow = detection.smoothingWindow,
                         processedValues = detection.processedValues,
@@ -705,6 +797,32 @@ fun Application.configureRouting() {
                         return@get
                     }
                     call.respond(record.toSummaryResponse())
+                }
+
+                // Persist the Manager's desconsiderados so reopening an analysis
+                // continues where they left off, without recomputing the run.
+                put("/{id}/dismissed") {
+                    val supabaseUser = call.requireSupabaseUser(authClient) ?: return@put
+                    managerRepository.findOrCreateForSupabaseUser(
+                        supabaseUser.id,
+                        supabaseUser.email,
+                        supabaseUser.fullNameHint,
+                    )
+                    val id = call.parameters["id"]?.let(::runCatchingUuid)
+                    if (id == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de análise inválido."))
+                        return@put
+                    }
+                    val body = call.receive<UpdateDismissedRequest>()
+                    val updated = analysisRepository.updateDismissed(id, body.dismissedIndexes)
+                    if (!updated) {
+                        call.respond(
+                            HttpStatusCode.NotFound,
+                            ErrorResponse("Análise sem resultado para atualizar."),
+                        )
+                        return@put
+                    }
+                    call.respond(HttpStatusCode.NoContent)
                 }
             }
 

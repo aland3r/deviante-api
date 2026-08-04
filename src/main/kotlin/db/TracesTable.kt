@@ -33,6 +33,16 @@ object TraceEventsTable : Table(name = "trace_events") {
     val operationId = uuid("operation_id").references(OperationsTable.id)
     val sequenceIndex = integer("sequence_index")
     val occurredAt = timestampWithTimeZone("occurred_at").nullable()
+
+    /**
+     * Sojourn time of this single event, in seconds.
+     *
+     * Nullable because logs ingested before the column existed have no value
+     * for it. The per-operation analysis refuses to run on those rather than
+     * reading a missing duration as zero, which would fabricate a level change
+     * exactly where the data is absent.
+     */
+    val durationSeconds = decimal("duration_seconds", 20, 3).nullable()
     val createdAt = timestampWithTimeZone("created_at")
 
     override val primaryKey = PrimaryKey(id)

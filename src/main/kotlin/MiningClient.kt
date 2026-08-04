@@ -70,6 +70,7 @@ class MiningAnalysisException(message: String) : RuntimeException(message)
 private data class DetectSeriesRequest(
     val values: List<Double>,
     val delta: Double,
+    val treatment: String,
 )
 
 @Serializable
@@ -86,6 +87,7 @@ data class DetectedDriftDto(
 data class DetectSeriesResponse(
     val method: String,
     val delta: Double,
+    val treatment: String = "treated",
     @SerialName("observation_count")
     val observationCount: Int,
     @SerialName("smoothing_window")
@@ -160,11 +162,15 @@ class MiningClient(private val baseUrl: String) {
         return response.body()
     }
 
-    suspend fun detect(values: List<Double>, delta: Double = 0.002): DetectSeriesResponse {
+    suspend fun detect(
+        values: List<Double>,
+        delta: Double = 0.002,
+        treatment: String = "treated",
+    ): DetectSeriesResponse {
         val response = try {
             client.post("$baseUrl/detect") {
                 contentType(ContentType.Application.Json)
-                setBody(DetectSeriesRequest(values, delta))
+                setBody(DetectSeriesRequest(values, delta, treatment))
             }
         } catch (err: Exception) {
             logger.error("[MiningClient] $baseUrl unreachable", err)

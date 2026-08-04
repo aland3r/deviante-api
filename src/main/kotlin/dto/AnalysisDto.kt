@@ -26,6 +26,30 @@ data class AnalysisDriftResponse(
     val magnitudePercent: Double,
     val windowWidth: Double,
     val estimationSeconds: Double,
+    /**
+     * When the drift was signalled, and when the degradation is estimated to
+     * have started. Maintenance is scheduled against a calendar, so a drift
+     * described only by its position in the series cannot be acted on: these
+     * two instants are what turn the detection into a date the Manager can
+     * plan around, and their difference is the P-F interval in real time.
+     */
+    val detectedAt: String? = null,
+    val anomalyStartedAt: String? = null,
+    val detectionDelaySeconds: Double? = null,
+)
+
+/** What the series was built from — see [AnalysisRepository.latestSeries]. */
+@Serializable
+data class AnalysisScopeResponse(
+    /**
+     * `process` (whole-trace duration), `operation` (one raw label's sojourn),
+     * or `activity` (sojourn of every operation mapped to one Activity).
+     */
+    val kind: String,
+    val operationId: String? = null,
+    val operationLabel: String? = null,
+    val activityId: String? = null,
+    val activityLabel: String? = null,
 )
 
 @Serializable
@@ -37,18 +61,34 @@ data class ProcessAnalysisResponse(
     val eventLog: EventLogResponse,
     val method: String,
     val delta: Double,
+    /** `raw` reproduces the synthetic baseline; `treated` the shop-floor one. */
+    val treatment: String = "treated",
+    val scope: AnalysisScopeResponse = AnalysisScopeResponse(kind = "process"),
     val traceCount: Int,
     val smoothingWindow: Int,
     val processedValues: List<Double>,
     val outlierIndexes: List<Int>,
     val points: List<AnalysisTracePointResponse>,
     val drifts: List<AnalysisDriftResponse>,
+    /**
+     * Trace indexes the Manager marked "pra sumir" — desconsiderados from the
+     * summary counts. Held on the persisted result so reopening an analysis
+     * restores exactly where the Manager left off, instead of recomputing.
+     * Empty on a fresh run; updated in place via the dismissed endpoint.
+     */
+    val dismissedIndexes: List<Int> = emptyList(),
 )
 
 @Serializable
 data class CreateAnalysisRequest(
     val processId: String,
     val name: String? = null,
+)
+
+/** Replaces the full set of desconsiderados on a run — see the dismissed endpoint. */
+@Serializable
+data class UpdateDismissedRequest(
+    val dismissedIndexes: List<Int> = emptyList(),
 )
 
 /** Dashboard card — no full series payload. */
