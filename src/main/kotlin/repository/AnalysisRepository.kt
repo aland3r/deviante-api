@@ -17,6 +17,7 @@ import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.and
+import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -37,6 +38,10 @@ class AnalysisRepository {
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
+    }
+
+    fun delete(id: UUID): Boolean = transaction {
+        AnalysesTable.deleteWhere { AnalysesTable.id eq id } > 0
     }
 
     /**

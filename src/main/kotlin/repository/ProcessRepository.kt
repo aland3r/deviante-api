@@ -63,14 +63,13 @@ class ProcessRepository {
     fun update(
         id: UUID,
         name: String,
-        companyName: String,
         description: String,
         sector: String,
     ): ProcessRecord? = transaction {
         val now = OffsetDateTime.now()
         val updated = ProcessesTable.update({ ProcessesTable.id eq id }) {
             it[ProcessesTable.name] = name
-            it[ProcessesTable.companyName] = companyName
+            it[ProcessesTable.companyName] = ""
             it[ProcessesTable.description] = description
             it[ProcessesTable.sector] = sector
             it[ProcessesTable.updatedAt] = now

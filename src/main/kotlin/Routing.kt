@@ -239,11 +239,6 @@ fun Application.configureRouting() {
                     } else if (body.name.trim().length > 100) {
                         fieldErrors["name"] = "O nome do processo deve ter no máximo 100 caracteres."
                     }
-                    if (body.companyName.isBlank()) {
-                        fieldErrors["companyName"] = "O nome da empresa é obrigatório."
-                    } else if (body.companyName.trim().length > 255) {
-                        fieldErrors["companyName"] = "O nome da empresa deve ter no máximo 255 caracteres."
-                    }
                     if (fieldErrors.isNotEmpty()) {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("Corrija os campos destacados.", fieldErrors))
                         return@put
@@ -257,7 +252,6 @@ fun Application.configureRouting() {
                     val updated = processRepository.update(
                         id = id,
                         name = body.name.trim(),
-                        companyName = body.companyName.trim(),
                         description = body.description.trim(),
                         sector = body.sector.trim(),
                     )
@@ -1154,6 +1148,20 @@ fun Application.configureRouting() {
                         return@get
                     }
                     call.respond(record.toSummaryResponse())
+                }
+
+                delete("/{id}") {
+                    call.requireSupabaseUser(authClient) ?: return@delete
+                    val id = call.parameters["id"]?.let(::runCatchingUuid)
+                    if (id == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de análise inválido."))
+                        return@delete
+                    }
+                    if (!analysisRepository.delete(id)) {
+                        call.respond(HttpStatusCode.NotFound, ErrorResponse("Análise não encontrada."))
+                        return@delete
+                    }
+                    call.respond(HttpStatusCode.NoContent)
                 }
 
                 // Persist the Manager's subtractive filter so reopening an

@@ -8,7 +8,6 @@ import java.time.format.DateTimeFormatter
 data class ProcessResponse(
     val id: String,
     val name: String,
-    val companyName: String,
     val description: String,
     val sector: String,
     val createdAt: String,
@@ -18,7 +17,6 @@ data class ProcessResponse(
 @Serializable
 data class UpdateProcessRequest(
     val name: String,
-    val companyName: String,
     val description: String = "",
     val sector: String = "",
 )
@@ -57,7 +55,6 @@ fun validateProcessDeletion(
 fun ProcessRecord.toResponse() = ProcessResponse(
     id = id.toString(),
     name = name,
-    companyName = companyName,
     description = description,
     sector = sector,
     createdAt = createdAt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
