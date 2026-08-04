@@ -21,6 +21,11 @@ data class OperationResponse(
     val mappingStatus: String,
     val createdAt: String,
     val updatedAt: String,
+    val processId: String? = null,
+    val processName: String? = null,
+    val eventLogName: String? = null,
+    val equipmentIds: List<String> = emptyList(),
+    val equipmentNames: List<String> = emptyList(),
 )
 
 @Serializable
@@ -34,7 +39,14 @@ data class MapOperationRequest(
     val activityId: String,
 )
 
-fun OperationRecord.toResponse(activityName: String? = null) = OperationResponse(
+fun OperationRecord.toResponse(
+    activityName: String? = null,
+    processId: String? = null,
+    processName: String? = null,
+    eventLogName: String? = null,
+    equipmentIds: List<String> = emptyList(),
+    equipmentNames: List<String> = emptyList(),
+) = OperationResponse(
     id = id.toString(),
     eventLogId = eventLogId.toString(),
     rawLabel = rawLabel,
@@ -44,4 +56,9 @@ fun OperationRecord.toResponse(activityName: String? = null) = OperationResponse
     mappingStatus = mappingStatus,
     createdAt = createdAt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
     updatedAt = updatedAt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
+    processId = processId,
+    processName = processName,
+    eventLogName = eventLogName,
+    equipmentIds = equipmentIds,
+    equipmentNames = equipmentNames,
 )

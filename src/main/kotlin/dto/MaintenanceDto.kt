@@ -34,6 +34,17 @@ data class EquipmentResponse(
     val assetFormat: String? = null,
     val createdAt: String,
     val updatedAt: String,
+    val processIds: List<String> = emptyList(),
+    val processNames: List<String> = emptyList(),
+    val monitoringIds: List<String> = emptyList(),
+    val monitoringNames: List<String> = emptyList(),
+    val parameterCount: Int = 0,
+    val readingCount: Int = 0,
+    val analysisCount: Int = 0,
+    val latestRulValue: Double? = null,
+    val latestRulUnit: String? = null,
+    val latestFailureProbability: Double? = null,
+    val latestAnalysisAt: String? = null,
 )
 
 @Serializable

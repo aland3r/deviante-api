@@ -44,8 +44,52 @@ data class StoredEquipmentAnalysis(
 )
 
 class MaintenanceRepository {
-    fun listEquipment(): List<EquipmentResponse> = transaction {
-        EquipmentTable.selectAll().orderBy(EquipmentTable.updatedAt, SortOrder.DESC).map(::equipment)
+    fun listEquipment(managerId: UUID): List<EquipmentResponse> = transaction {
+        val rows = EquipmentTable.selectAll()
+            .where { EquipmentTable.managerId eq managerId }
+            .orderBy(EquipmentTable.updatedAt, SortOrder.DESC)
+            .toList()
+        if (rows.isEmpty()) return@transaction emptyList()
+        val equipmentIds = rows.map { it[EquipmentTable.id] }
+
+        val processes = ProcessEquipmentTable.innerJoin(ProcessesTable).selectAll()
+            .where { ProcessEquipmentTable.equipmentId inList equipmentIds }
+            .groupBy { it[ProcessEquipmentTable.equipmentId] }
+        val monitorings = MonitoringEquipmentTable.innerJoin(MonitoringsTable).selectAll()
+            .where { MonitoringEquipmentTable.equipmentId inList equipmentIds }
+            .groupBy { it[MonitoringEquipmentTable.equipmentId] }
+        val parameters = MonitoringParametersTable.selectAll()
+            .where { MonitoringParametersTable.equipmentId inList equipmentIds }
+            .groupBy { it[MonitoringParametersTable.equipmentId] }
+        val readingCounts = MonitoringReadingsTable.innerJoin(MonitoringParametersTable).selectAll()
+            .where { MonitoringParametersTable.equipmentId inList equipmentIds }
+            .groupingBy { it[MonitoringParametersTable.equipmentId] }
+            .eachCount()
+        val analyses = EquipmentAnalysisRunsTable.selectAll()
+            .where { EquipmentAnalysisRunsTable.equipmentId inList equipmentIds }
+            .orderBy(EquipmentAnalysisRunsTable.createdAt, SortOrder.DESC)
+            .groupBy { it[EquipmentAnalysisRunsTable.equipmentId] }
+
+        rows.map { row ->
+            val equipmentId = row[EquipmentTable.id]
+            val linkedProcesses = processes[equipmentId].orEmpty()
+            val linkedMonitorings = monitorings[equipmentId].orEmpty()
+            val analysisRows = analyses[equipmentId].orEmpty()
+            val latest = analysisRows.firstOrNull()
+            equipment(row).copy(
+                processIds = linkedProcesses.map { it[ProcessesTable.id].toString() }.distinct(),
+                processNames = linkedProcesses.map { it[ProcessesTable.name] }.distinct(),
+                monitoringIds = linkedMonitorings.map { it[MonitoringsTable.id].toString() }.distinct(),
+                monitoringNames = linkedMonitorings.map { it[MonitoringsTable.name] }.distinct(),
+                parameterCount = parameters[equipmentId].orEmpty().size,
+                readingCount = readingCounts[equipmentId] ?: 0,
+                analysisCount = analysisRows.size,
+                latestRulValue = latest?.get(EquipmentAnalysisRunsTable.rulValue),
+                latestRulUnit = latest?.get(EquipmentAnalysisRunsTable.rulUnit),
+                latestFailureProbability = latest?.get(EquipmentAnalysisRunsTable.failureProbability),
+                latestAnalysisAt = latest?.get(EquipmentAnalysisRunsTable.createdAt)?.iso(),
+            )
+        }
     }
 
     fun findEquipment(id: UUID): EquipmentResponse? = transaction {

@@ -438,9 +438,15 @@ fun Application.configureRouting() {
                 val user = call.requireSupabaseUser(authClient) ?: return@get
                 val manager = managerRepository.findOrCreateForSupabaseUser(user.id, user.email, user.fullNameHint)
                 call.respond(
-                    operationsRepository.listForManager(manager.id).map { operation ->
-                        val activityName = operation.activityId?.let(activitiesRepository::findById)?.name
-                        operation.toResponse(activityName)
+                    operationsRepository.listCatalogForManager(manager.id).map { catalog ->
+                        catalog.operation.toResponse(
+                            activityName = catalog.activityName,
+                            processId = catalog.processId.toString(),
+                            processName = catalog.processName,
+                            eventLogName = catalog.eventLogName,
+                            equipmentIds = catalog.equipment.map { it.id.toString() },
+                            equipmentNames = catalog.equipment.map { it.name },
+                        )
                     },
                 )
             }
@@ -448,8 +454,8 @@ fun Application.configureRouting() {
             route("/equipment") {
                 get {
                     val user = call.requireSupabaseUser(authClient) ?: return@get
-                    managerRepository.findOrCreateForSupabaseUser(user.id, user.email, user.fullNameHint)
-                    call.respond(maintenanceRepository.listEquipment())
+                    val manager = managerRepository.findOrCreateForSupabaseUser(user.id, user.email, user.fullNameHint)
+                    call.respond(maintenanceRepository.listEquipment(manager.id))
                 }
                 post {
                     val user = call.requireSupabaseUser(authClient) ?: return@post

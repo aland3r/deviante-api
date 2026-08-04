@@ -3,6 +3,9 @@ package com.deviante.repository
 import com.deviante.db.OperationsTable
 import com.deviante.db.EventLogsTable
 import com.deviante.db.ProcessesTable
+import com.deviante.db.ActivitiesTable
+import com.deviante.db.EquipmentTable
+import com.deviante.db.ProcessEquipmentTable
 import com.deviante.model.OperationRecord
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder
@@ -15,7 +18,55 @@ import org.jetbrains.exposed.sql.update
 import java.time.OffsetDateTime
 import java.util.UUID
 
+data class OperationEquipmentContext(val id: UUID, val name: String)
+
+data class OperationCatalogRecord(
+    val operation: OperationRecord,
+    val activityName: String?,
+    val processId: UUID,
+    val processName: String,
+    val eventLogName: String,
+    val equipment: List<OperationEquipmentContext>,
+)
+
 class OperationsRepository {
+    fun listCatalogForManager(managerId: UUID): List<OperationCatalogRecord> = transaction {
+        val rows = OperationsTable.innerJoin(EventLogsTable).innerJoin(ProcessesTable)
+            .selectAll()
+            .where { ProcessesTable.managerId eq managerId }
+            .orderBy(OperationsTable.occurrenceCount, SortOrder.DESC)
+            .toList()
+        if (rows.isEmpty()) return@transaction emptyList()
+
+        val processIds = rows.map { it[ProcessesTable.id] }.distinct()
+        val equipmentByProcess = ProcessEquipmentTable.innerJoin(EquipmentTable)
+            .selectAll()
+            .where { ProcessEquipmentTable.processId inList processIds }
+            .groupBy { it[ProcessEquipmentTable.processId] }
+            .mapValues { (_, linked) ->
+                linked.map { OperationEquipmentContext(it[EquipmentTable.id], it[EquipmentTable.name]) }
+                    .distinctBy(OperationEquipmentContext::id)
+            }
+        val activityIds = rows.mapNotNull { it[OperationsTable.activityId] }.distinct()
+        val activityNames = if (activityIds.isEmpty()) emptyMap() else ActivitiesTable
+            .selectAll()
+            .where { ActivitiesTable.id inList activityIds }
+            .associate { it[ActivitiesTable.id] to it[ActivitiesTable.name] }
+
+        rows.map { row ->
+            val processId = row[ProcessesTable.id]
+            val operation = row.toOperationRecord()
+            OperationCatalogRecord(
+                operation = operation,
+                activityName = operation.activityId?.let(activityNames::get),
+                processId = processId,
+                processName = row[ProcessesTable.name],
+                eventLogName = row[EventLogsTable.fileName],
+                equipment = equipmentByProcess[processId].orEmpty(),
+            )
+        }
+    }
+
     fun listForManager(managerId: UUID): List<OperationRecord> = transaction {
         OperationsTable.innerJoin(EventLogsTable).innerJoin(ProcessesTable)
             .selectAll()
