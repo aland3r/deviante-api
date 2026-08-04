@@ -27,7 +27,7 @@ import java.time.format.DateTimeFormatter
 import java.util.UUID
 
 data class AnalysisSeries(
-    val eventLog: EventLogRecord,
+    val eventLogs: List<EventLogRecord>,
     val points: List<AnalysisTracePointResponse>,
 )
 
@@ -75,25 +75,28 @@ class AnalysisRepository {
      */
     fun latestSeries(
         processId: UUID,
+        eventLogIds: Set<UUID> = emptySet(),
         excludedActivityIds: Set<UUID> = emptySet(),
         excludedTraceIds: Set<UUID> = emptySet(),
     ): AnalysisSeries? = transaction {
-        val log = EventLogsTable
+        val logQuery = EventLogsTable
             .selectAll()
             .where {
                 (EventLogsTable.processId eq processId) and
-                    (EventLogsTable.parseStatus eq "parsed")
+                    (EventLogsTable.parseStatus eq "parsed") and
+                    (if (eventLogIds.isEmpty()) EventLogsTable.id.isNotNull() else EventLogsTable.id inList eventLogIds)
             }
             .orderBy(EventLogsTable.uploadedAt, SortOrder.DESC)
-            .limit(1)
-            .firstOrNull()
-            ?.toEventLogRecord()
-            ?: return@transaction null
+        val logs = (if (eventLogIds.isEmpty()) logQuery.limit(1) else logQuery)
+            .map { it.toEventLogRecord() }
+        if (logs.isEmpty()) return@transaction null
+        val selectedLogIds = logs.map { it.id }.toSet()
+        val uploadedAtByLog = logs.associate { it.id to it.uploadedAt }
 
         val rawPoints = if (excludedActivityIds.isEmpty()) {
-            wholeTraceSeries(log.id)
+            wholeTraceSeries(selectedLogIds, uploadedAtByLog)
         } else {
-            activeActivitiesSeries(log.id, excludedActivityIds)
+            activeActivitiesSeries(selectedLogIds, uploadedAtByLog, excludedActivityIds)
         }
 
         // Drop the excluded cases and renumber, so a filtered run is not a
@@ -102,14 +105,14 @@ class AnalysisRepository {
             .filterNot { runCatching { UUID.fromString(it.traceId) }.getOrNull() in excludedTraceIds }
             .mapIndexed { index, point -> point.copy(index = index + 1) }
 
-        AnalysisSeries(eventLog = log, points = points)
+        AnalysisSeries(eventLogs = logs, points = points)
     }
 
     /** Whole-trace duration, one point per trace, in chronological order. */
-    private fun wholeTraceSeries(eventLogId: UUID): List<AnalysisTracePointResponse> {
+    private fun wholeTraceSeries(eventLogIds: Set<UUID>, uploadedAtByLog: Map<UUID, OffsetDateTime>): List<AnalysisTracePointResponse> {
         val rows = TracesTable
             .selectAll()
-            .where { TracesTable.eventLogId eq eventLogId }
+            .where { TracesTable.eventLogId inList eventLogIds }
             .mapNotNull { row ->
                 val duration = row[TracesTable.durationSeconds]?.toDouble()
                 if (duration == null || !duration.isFinite() || duration < 0) {
@@ -119,12 +122,13 @@ class AnalysisRepository {
                         id = row[TracesTable.id],
                         caseId = row[TracesTable.caseId],
                         startedAt = row[TracesTable.startedAt],
+                        orderAt = row[TracesTable.startedAt] ?: uploadedAtByLog.getValue(row[TracesTable.eventLogId]),
                         durationSeconds = duration,
                     )
                 }
             }
             .sortedWith(
-                compareBy<TraceDurationRow> { it.startedAt ?: OffsetDateTime.MAX }
+                compareBy<TraceDurationRow> { it.orderAt }
                     .thenBy { it.caseId },
             )
 
@@ -145,13 +149,14 @@ class AnalysisRepository {
      * absent rather than a zero, which ADWIN would misread as a drop to idle.
      */
     private fun activeActivitiesSeries(
-        eventLogId: UUID,
+        eventLogIds: Set<UUID>,
+        uploadedAtByLog: Map<UUID, OffsetDateTime>,
         excludedActivityIds: Set<UUID>,
     ): List<AnalysisTracePointResponse> {
         val operationIds = OperationsTable
             .selectAll()
             .where {
-                (OperationsTable.eventLogId eq eventLogId) and
+                (OperationsTable.eventLogId inList eventLogIds) and
                     (OperationsTable.activityId.isNotNull())
             }
             .mapNotNull { row ->
@@ -166,7 +171,8 @@ class AnalysisRepository {
         }
 
         return aggregatedSeries(
-            eventLogId = eventLogId,
+            eventLogIds = eventLogIds,
+            uploadedAtByLog = uploadedAtByLog,
             operationIds = operationIds,
             missingEventsMessage = "Nenhum evento das atividades ativas foi encontrado no log.",
             scopeNoun = "atividade",
@@ -179,7 +185,8 @@ class AnalysisRepository {
      * in time.
      */
     private fun aggregatedSeries(
-        eventLogId: UUID,
+        eventLogIds: Set<UUID>,
+        uploadedAtByLog: Map<UUID, OffsetDateTime>,
         operationIds: List<UUID>,
         missingEventsMessage: String,
         scopeNoun: String,
@@ -189,7 +196,7 @@ class AnalysisRepository {
             .selectAll()
             .where {
                 (TraceEventsTable.operationId inList operationIds) and
-                    (TracesTable.eventLogId eq eventLogId)
+                    (TracesTable.eventLogId inList eventLogIds)
             }
             .toList()
 
@@ -211,6 +218,7 @@ class AnalysisRepository {
             val traceId: UUID,
             val caseId: String,
             val startedAt: OffsetDateTime?,
+            val orderAt: OffsetDateTime,
             var totalSeconds: Double,
         )
 
@@ -224,6 +232,7 @@ class AnalysisRepository {
                     traceId = traceId,
                     caseId = row[TracesTable.caseId],
                     startedAt = row[TracesTable.startedAt],
+                    orderAt = row[TracesTable.startedAt] ?: uploadedAtByLog.getValue(row[TracesTable.eventLogId]),
                     totalSeconds = 0.0,
                 )
             }
@@ -232,7 +241,7 @@ class AnalysisRepository {
 
         return byTrace.values
             .sortedWith(
-                compareBy<Accumulated> { it.startedAt ?: OffsetDateTime.MAX }
+                compareBy<Accumulated> { it.orderAt }
                     .thenBy { it.caseId },
             )
             .mapIndexed { index, accumulated ->
@@ -384,6 +393,7 @@ class AnalysisRepository {
         val id: UUID,
         val caseId: String,
         val startedAt: OffsetDateTime?,
+        val orderAt: OffsetDateTime,
         val durationSeconds: Double,
     )
 

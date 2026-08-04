@@ -66,9 +66,9 @@ class ProcessGraphRepository {
         val mappingStatus: String,
     )
 
-    fun graph(processId: UUID): ProcessGraphResponse = transaction {
-        val log = latestParsedLog(processId)
-            ?: return@transaction ProcessGraphResponse(
+    fun graph(processId: UUID, eventLogIds: Set<UUID> = emptySet()): ProcessGraphResponse = transaction {
+        val logs = selectedParsedLogs(processId, eventLogIds)
+        if (logs.isEmpty()) return@transaction ProcessGraphResponse(
                 eventLog = null,
                 caseCount = 0,
                 eventCount = 0,
@@ -76,9 +76,10 @@ class ProcessGraphRepository {
                 nodes = emptyList(),
                 edges = emptyList(),
             )
+        val selectedLogIds = logs.map { it.id }.toSet()
 
-        val nodesByOperation = nodesByOperation(log.id)
-        val events = events(log.id, nodesByOperation)
+        val nodesByOperation = nodesByOperation(selectedLogIds)
+        val events = events(selectedLogIds, nodesByOperation)
 
         val byTrace = events.groupBy { it.traceId }
         val durations = mutableMapOf<String, MutableList<Double>>()
@@ -163,7 +164,8 @@ class ProcessGraphRepository {
             }
 
         ProcessGraphResponse(
-            eventLog = log.toResponse(),
+            eventLog = logs.first().toResponse(),
+            eventLogs = logs.map { it.toResponse() },
             caseCount = byTrace.size,
             eventCount = events.size,
             hasUnmappedOperations = nodesByOperation.values.any { it.mappingStatus == "unmapped" },
@@ -172,18 +174,29 @@ class ProcessGraphRepository {
         )
     }
 
-    fun variants(processId: UUID): TraceVariantsResponse = transaction {
-        val log = latestParsedLog(processId)
-            ?: return@transaction TraceVariantsResponse(0, 0, emptyList())
+    fun variants(processId: UUID, eventLogIds: Set<UUID> = emptySet()): TraceVariantsResponse = transaction {
+        val logs = selectedParsedLogs(processId, eventLogIds)
+        if (logs.isEmpty()) return@transaction TraceVariantsResponse(0, 0, emptyList())
+        val selectedLogIds = logs.map { it.id }.toSet()
 
-        val nodeIdByLabel = nodesByOperation(log.id).values.associate { it.rawLabel to it.id }
+        val nodesByOperation = nodesByOperation(selectedLogIds)
+        val nodeIdByLogAndLabel = OperationsTable
+            .selectAll()
+            .where { OperationsTable.eventLogId inList selectedLogIds }
+            .mapNotNull { row ->
+                nodesByOperation[row[OperationsTable.id]]?.let { node ->
+                    (row[OperationsTable.eventLogId] to row[OperationsTable.rawLabel]) to node.id
+                }
+            }
+            .toMap()
 
         val traces = TracesTable
             .selectAll()
-            .where { TracesTable.eventLogId eq log.id }
+            .where { TracesTable.eventLogId inList selectedLogIds }
             .map {
                 TraceRow(
                     id = it[TracesTable.id],
+                    eventLogId = it[TracesTable.eventLogId],
                     caseId = it[TracesTable.caseId],
                     sequence = it[TracesTable.activitySequence],
                     startedAt = it[TracesTable.startedAt],
@@ -198,21 +211,26 @@ class ProcessGraphRepository {
         val sortedDurations = traces.mapNotNull { it.durationSeconds }.sorted()
         val p90 = sortedDurations.percentile(0.90)
 
-        val grouped = traces.groupBy { it.sequence }
+        val grouped = traces.groupBy { trace ->
+            VariantKey(
+                sequence = trace.sequence,
+                nodeIds = trace.sequence.mapNotNull { label -> nodeIdByLogAndLabel[trace.eventLogId to label] },
+            )
+        }
             .entries
             .sortedByDescending { it.value.size }
 
         val dominant = grouped.firstOrNull()?.key
 
-        val variants = grouped.mapIndexed { index, (sequence, group) ->
+        val variants = grouped.mapIndexed { index, (key, group) ->
             val groupDurations = group.mapNotNull { it.durationSeconds }.sorted()
             TraceVariantResponse(
                 id = "v${index + 1}",
-                label = "Variante ${variantLetter(index)} — ${sequence.firstOrNull() ?: "vazia"} → ${sequence.lastOrNull() ?: "vazia"}",
-                sequence = sequence,
-                nodeIds = sequence.mapNotNull { nodeIdByLabel[it] },
+                label = "Variante ${variantLetter(index)} — ${key.sequence.firstOrNull() ?: "vazia"} → ${key.sequence.lastOrNull() ?: "vazia"}",
+                sequence = key.sequence,
+                nodeIds = key.nodeIds,
                 caseCount = group.size,
-                deviation = sequence != dominant,
+                deviation = key != dominant,
                 medianDurationSeconds = groupDurations.median(),
                 cases = group
                     .sortedByDescending { it.durationSeconds ?: 0.0 }
@@ -237,27 +255,36 @@ class ProcessGraphRepository {
 
     private data class TraceRow(
         val id: UUID,
+        val eventLogId: UUID,
         val caseId: String,
         val sequence: List<String>,
         val startedAt: OffsetDateTime?,
         val durationSeconds: Double?,
     )
 
-    /** The log the canvas speaks for: the most recent one that parsed cleanly. */
-    private fun latestParsedLog(processId: UUID): EventLogRecord? =
-        EventLogsTable
-            .selectAll()
-            .where { (EventLogsTable.processId eq processId) and (EventLogsTable.parseStatus eq "parsed") }
-            .orderBy(EventLogsTable.uploadedAt, SortOrder.DESC)
-            .limit(1)
-            .firstOrNull()
-            ?.toEventLogRecord()
+    private data class VariantKey(
+        val sequence: List<String>,
+        val nodeIds: List<String>,
+    )
 
-    private fun nodesByOperation(eventLogId: UUID): Map<UUID, NodeInfo> =
+    /** Selected parsed uploads, or the newest parsed upload for old clients. */
+    private fun selectedParsedLogs(processId: UUID, requestedIds: Set<UUID>): List<EventLogRecord> {
+        val query = EventLogsTable
+            .selectAll()
+            .where {
+                (EventLogsTable.processId eq processId) and
+                    (EventLogsTable.parseStatus eq "parsed") and
+                    (if (requestedIds.isEmpty()) EventLogsTable.id.isNotNull() else EventLogsTable.id inList requestedIds)
+            }
+            .orderBy(EventLogsTable.uploadedAt, SortOrder.DESC)
+        return (if (requestedIds.isEmpty()) query.limit(1) else query).map { it.toEventLogRecord() }
+    }
+
+    private fun nodesByOperation(eventLogIds: Set<UUID>): Map<UUID, NodeInfo> =
         OperationsTable
             .join(ActivitiesTable, JoinType.LEFT, OperationsTable.activityId, ActivitiesTable.id)
             .selectAll()
-            .where { OperationsTable.eventLogId eq eventLogId }
+            .where { OperationsTable.eventLogId inList eventLogIds }
             .associate { row ->
                 val operationId = row[OperationsTable.id]
                 val activityId = row[OperationsTable.activityId]
@@ -271,11 +298,11 @@ class ProcessGraphRepository {
                 )
             }
 
-    private fun events(eventLogId: UUID, nodes: Map<UUID, NodeInfo>): List<Event> =
+    private fun events(eventLogIds: Set<UUID>, nodes: Map<UUID, NodeInfo>): List<Event> =
         TraceEventsTable
             .join(TracesTable, JoinType.INNER, TraceEventsTable.traceId, TracesTable.id)
             .selectAll()
-            .where { TracesTable.eventLogId eq eventLogId }
+            .where { TracesTable.eventLogId inList eventLogIds }
             .mapNotNull { row ->
                 val node = nodes[row[TraceEventsTable.operationId]] ?: return@mapNotNull null
                 Event(

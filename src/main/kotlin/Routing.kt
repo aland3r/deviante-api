@@ -880,7 +880,24 @@ fun Application.configureRouting() {
                         return@get
                     }
 
-                    call.respond(graphRepository.graph(processId))
+                    val eventLogIds = call.request.queryParameters.getAll("eventLogId").orEmpty()
+                        .mapNotNull(::runCatchingUuid)
+                        .toSet()
+                    if (eventLogIds.size != call.request.queryParameters.getAll("eventLogId").orEmpty().size) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de log de eventos inválido."))
+                        return@get
+                    }
+                    if (eventLogIds.isNotEmpty()) {
+                        val available = eventLogsRepository.findByProcessId(processId)
+                            .filter { it.parseStatus == "parsed" }
+                            .map { it.id }
+                            .toSet()
+                        if (!available.containsAll(eventLogIds)) {
+                            call.respond(HttpStatusCode.BadRequest, ErrorResponse("Selecione apenas logs parseados deste processo."))
+                            return@get
+                        }
+                    }
+                    call.respond(graphRepository.graph(processId, eventLogIds))
                 }
             }
 
@@ -896,7 +913,24 @@ fun Application.configureRouting() {
                         return@get
                     }
 
-                    call.respond(graphRepository.variants(processId))
+                    val eventLogIds = call.request.queryParameters.getAll("eventLogId").orEmpty()
+                        .mapNotNull(::runCatchingUuid)
+                        .toSet()
+                    if (eventLogIds.size != call.request.queryParameters.getAll("eventLogId").orEmpty().size) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de log de eventos inválido."))
+                        return@get
+                    }
+                    if (eventLogIds.isNotEmpty()) {
+                        val available = eventLogsRepository.findByProcessId(processId)
+                            .filter { it.parseStatus == "parsed" }
+                            .map { it.id }
+                            .toSet()
+                        if (!available.containsAll(eventLogIds)) {
+                            call.respond(HttpStatusCode.BadRequest, ErrorResponse("Selecione apenas logs parseados deste processo."))
+                            return@get
+                        }
+                    }
+                    call.respond(graphRepository.variants(processId, eventLogIds))
                 }
             }
 
@@ -947,8 +981,25 @@ fun Application.configureRouting() {
                         return@post
                     }
 
+                    val requestedEventLogIds = try {
+                        body.eventLogIds.map { UUID.fromString(it) }.toSet()
+                    } catch (err: IllegalArgumentException) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de log de eventos inválido."))
+                        return@post
+                    }
+                    if (requestedEventLogIds.isNotEmpty()) {
+                        val available = eventLogsRepository.findByProcessId(processId)
+                            .filter { it.parseStatus == "parsed" }
+                            .map { it.id }
+                            .toSet()
+                        if (!available.containsAll(requestedEventLogIds)) {
+                            call.respond(HttpStatusCode.BadRequest, ErrorResponse("Selecione apenas logs parseados deste processo."))
+                            return@post
+                        }
+                    }
+
                     val series = try {
-                        analysisRepository.latestSeries(processId, excludedActivityIds, excludedTraceIds)
+                        analysisRepository.latestSeries(processId, requestedEventLogIds, excludedActivityIds, excludedTraceIds)
                     } catch (err: AnalysisSeriesException) {
                         call.respond(
                             HttpStatusCode.UnprocessableEntity,
@@ -1056,7 +1107,8 @@ fun Application.configureRouting() {
                     )
 
                     val response = ProcessAnalysisResponse(
-                        eventLog = series.eventLog.toResponse(),
+                        eventLog = series.eventLogs.first().toResponse(),
+                        eventLogs = series.eventLogs.map { it.toResponse() },
                         method = detection.method,
                         delta = detection.delta,
                         treatment = detection.treatment,

@@ -59,6 +59,8 @@ data class ProcessAnalysisResponse(
     val processId: String? = null,
     val processName: String? = null,
     val eventLog: EventLogResponse,
+    /** Every persisted upload combined to build this run, newest first. */
+    val eventLogs: List<EventLogResponse> = emptyList(),
     val method: String,
     val delta: Double,
     /** `raw` reproduces the synthetic baseline; `treated` the shop-floor one. */
@@ -96,6 +98,7 @@ data class CreateAnalysisRequest(
 data class RunAnalysisRequest(
     val treatment: String = "treated",
     val delta: Double? = null,
+    val eventLogIds: List<String> = emptyList(),
     val excludedActivityIds: List<String> = emptyList(),
     val excludedTraceIds: List<String> = emptyList(),
 )

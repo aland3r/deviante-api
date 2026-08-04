@@ -12,6 +12,7 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class ProcessGraphResponse(
     val eventLog: EventLogResponse? = null,
+    val eventLogs: List<EventLogResponse> = emptyList(),
     val caseCount: Int,
     val eventCount: Int,
     /** True while at least one operation is still `unmapped` (UC5 pending): the

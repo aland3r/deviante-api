@@ -3,6 +3,7 @@ package com.deviante.repository
 import com.deviante.db.EventLogsTable
 import com.deviante.model.EventLogRecord
 import org.jetbrains.exposed.sql.ResultRow
+import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -53,6 +54,7 @@ class EventLogsRepository {
         EventLogsTable
             .selectAll()
             .where { EventLogsTable.processId eq processId }
+            .orderBy(EventLogsTable.uploadedAt, SortOrder.DESC)
             .map { it.toEventLogRecord() }
     }
 
