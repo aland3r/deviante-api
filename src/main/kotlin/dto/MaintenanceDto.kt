@@ -46,6 +46,15 @@ data class MonitoringRequest(
 )
 
 @Serializable
+data class CreateMonitoringRequest(
+    val name: String? = null,
+)
+
+internal fun CreateMonitoringRequest.toMonitoringRequest() = MonitoringRequest(
+    name = name?.trim()?.takeIf(String::isNotBlank) ?: "Novo monitoramento",
+)
+
+@Serializable
 data class MonitoringResponse(
     val id: String,
     val name: String,

@@ -17,6 +17,8 @@ import com.deviante.dto.EquipmentParameterRequest
 import com.deviante.dto.MaintenanceScheduleRequest
 import com.deviante.dto.MonitoringParameterRequest
 import com.deviante.dto.MonitoringRequest
+import com.deviante.dto.CreateMonitoringRequest
+import com.deviante.dto.toMonitoringRequest
 import com.deviante.dto.RecommendationRequest
 import com.deviante.dto.RunEquipmentAnalysisRequest
 import com.deviante.dto.ReadingImportResponse
@@ -706,13 +708,24 @@ fun Application.configureRouting() {
                 get { val u = call.requireSupabaseUser(authClient) ?: return@get; managerRepository.findOrCreateForSupabaseUser(u.id,u.email,u.fullNameHint); call.respond(maintenanceRepository.listMonitorings()) }
                 post {
                     val u = call.requireSupabaseUser(authClient) ?: return@post; val m = managerRepository.findOrCreateForSupabaseUser(u.id,u.email,u.fullNameHint)
-                    val body = call.receive<MonitoringRequest>(); if (body.name.isBlank()) { call.respond(HttpStatusCode.BadRequest, ErrorResponse("Nome do monitoramento é obrigatório.")); return@post }
+                    val body = call.receive<CreateMonitoringRequest>().toMonitoringRequest()
                     call.respond(HttpStatusCode.Created, maintenanceRepository.createMonitoring(m.id, body))
                 }
                 get("/{id}") { call.requireSupabaseUser(authClient) ?: return@get; val item = call.parameters["id"]?.let(::runCatchingUuid)?.let(maintenanceRepository::findMonitoring); if(item==null) call.respond(HttpStatusCode.NotFound,ErrorResponse("Monitoramento não encontrado.")) else call.respond(item) }
                 put("/{id}") { call.requireSupabaseUser(authClient) ?: return@put; val id=call.parameters["id"]?.let(::runCatchingUuid); val body=call.receive<MonitoringRequest>(); val item=id?.let{maintenanceRepository.updateMonitoring(it,body)}; if(item==null) call.respond(HttpStatusCode.NotFound,ErrorResponse("Monitoramento não encontrado.")) else call.respond(item) }
                 delete("/{id}") { call.requireSupabaseUser(authClient) ?: return@delete; val id=call.parameters["id"]?.let(::runCatchingUuid); if(id==null||!maintenanceRepository.deleteMonitoring(id)) call.respond(HttpStatusCode.NotFound,ErrorResponse("Monitoramento não encontrado.")) else call.respond(HttpStatusCode.NoContent) }
                 get("/{id}/equipment") { call.requireSupabaseUser(authClient) ?: return@get; val id=call.parameters["id"]?.let(::runCatchingUuid); if(id==null) call.respond(HttpStatusCode.BadRequest,ErrorResponse("ID inválido.")) else call.respond(maintenanceRepository.listMonitoringEquipment(id)) }
+                post("/{id}/equipment") {
+                    val u=call.requireSupabaseUser(authClient)?:return@post
+                    val m=managerRepository.findOrCreateForSupabaseUser(u.id,u.email,u.fullNameHint)
+                    val id=call.parameters["id"]?.let(::runCatchingUuid)
+                    val body=call.receive<EquipmentRequest>()
+                    if(id==null||body.name.isBlank()) { call.respond(HttpStatusCode.BadRequest,ErrorResponse("Monitoramento e nome do equipamento são obrigatórios.")); return@post }
+                    if(maintenanceRepository.findMonitoring(id)==null) { call.respond(HttpStatusCode.NotFound,ErrorResponse("Monitoramento não encontrado.")); return@post }
+                    val equipment=maintenanceRepository.createEquipment(m.id,body)
+                    maintenanceRepository.linkMonitoringEquipment(id,java.util.UUID.fromString(equipment.id))
+                    call.respond(HttpStatusCode.Created,equipment)
+                }
                 put("/{id}/equipment/{equipmentId}") { call.requireSupabaseUser(authClient) ?: return@put; val id=call.parameters["id"]?.let(::runCatchingUuid); val eid=call.parameters["equipmentId"]?.let(::runCatchingUuid); if(id==null||eid==null||!maintenanceRepository.linkMonitoringEquipment(id,eid)) call.respond(HttpStatusCode.NotFound,ErrorResponse("Monitoramento ou equipamento não encontrado.")) else call.respond(HttpStatusCode.NoContent) }
                 delete("/{id}/equipment/{equipmentId}") { call.requireSupabaseUser(authClient) ?: return@delete; val id=call.parameters["id"]?.let(::runCatchingUuid); val eid=call.parameters["equipmentId"]?.let(::runCatchingUuid); if(id==null||eid==null||!maintenanceRepository.unlinkMonitoringEquipment(id,eid)) call.respond(HttpStatusCode.NotFound,ErrorResponse("Associação não encontrada.")) else call.respond(HttpStatusCode.NoContent) }
                 get("/{id}/parameters") { call.requireSupabaseUser(authClient) ?: return@get; val id=call.parameters["id"]?.let(::runCatchingUuid); if(id==null) call.respond(HttpStatusCode.BadRequest,ErrorResponse("ID inválido.")) else call.respond(maintenanceRepository.listParameters(id)) }
