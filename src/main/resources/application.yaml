@@ -17,7 +17,7 @@ supabase:
   url: ${SUPABASE_URL:}
   anonKey: ${SUPABASE_ANON_KEY:}
 
-# Python/FastAPI process-mining service (deviante/mining) — stateless compute
+# Python/FastAPI process-mining service (deviante/api/mining) — stateless compute
 # for XES/CSV parsing (UC4). Not reachable from the browser; only this API
 # calls it. See gestalt-kit/docs/architecture.md § Process mining exception.
 mining:

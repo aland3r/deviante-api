@@ -17,7 +17,7 @@ import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 
 /**
- * Client for the Python/FastAPI process-mining service (`deviante/mining`).
+ * Client for the Python/FastAPI process-mining service (`deviante/api/mining`).
  *
  * That service is stateless compute — PM4Py has no practical JVM equivalent
  * for XES parsing. It returns a parse result; **this API persists it**. See

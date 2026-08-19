@@ -1,0 +1,27 @@
+{
+  "version": "1.0.0",
+  "purpose": "Reproducible research payload for the stateless mining adapter; never writes the database.",
+  "sources": [
+    {
+      "path": "Adaptive-Detection-of-Performance-Related-Temporal-Drifts-main/dataset_manufacturing/DR_MS_04.xes",
+      "role": "labelled-training",
+      "synthetic": true,
+      "maxTraces": 180
+    },
+    {
+      "path": "Adaptive-Detection-of-Performance-Related-Temporal-Drifts-main/dataset_manufacturing/DR_MS_ST_25.xes",
+      "role": "labelled-training-and-target-history",
+      "synthetic": true,
+      "maxTraces": 180
+    },
+    {
+      "path": "Adaptive-Detection-of-Performance-Related-Temporal-Drifts-main/real_dataset/Prod1Torno.csv",
+      "role": "drift-only",
+      "synthetic": false,
+      "maxTraces": 180,
+      "failureLabelsAvailable": false
+    }
+  ],
+  "excludedInferenceFeatures": ["DriftR", "Trace", "Maintenance"],
+  "output": "generated/research-prediction-payload.json"
+}
