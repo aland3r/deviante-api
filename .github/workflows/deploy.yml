@@ -18,18 +18,30 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
+      # Só envia ao Fly os valores preenchidos: um secret vazio no GitHub não
+      # pode apagar o que já está configurado no app. URL do banco, usuário e
+      # URL do Supabase não são sigilosos (estão no .env.example) e têm padrão.
       - name: Set secrets
         run: |
-          flyctl secrets set \
-            DATABASE_JDBC_URL="${{ secrets.DATABASE_JDBC_URL }}" \
-            DATABASE_USER="${{ secrets.DATABASE_USER }}" \
-            DATABASE_PASSWORD="${{ secrets.DATABASE_PASSWORD }}" \
-            SUPABASE_URL="${{ secrets.SUPABASE_URL }}" \
-            SUPABASE_ANON_KEY="${{ secrets.SUPABASE_ANON_KEY }}" \
-            MINING_SERVICE_URL="${{ secrets.MINING_SERVICE_URL }}" \
-            --app deviante-api --stage
+          args=()
+          for pair in \
+            "DATABASE_JDBC_URL=$DATABASE_JDBC_URL" \
+            "DATABASE_USER=$DATABASE_USER" \
+            "DATABASE_PASSWORD=$DATABASE_PASSWORD" \
+            "SUPABASE_URL=$SUPABASE_URL" \
+            "SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY" \
+            "MINING_SERVICE_URL=$MINING_SERVICE_URL"; do
+            if [ -n "${pair#*=}" ]; then args+=("$pair"); fi
+          done
+          flyctl secrets set "${args[@]}" --app deviante-api --stage
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          DATABASE_JDBC_URL: ${{ secrets.DATABASE_JDBC_URL || 'jdbc:postgresql://aws-1-sa-east-1.pooler.supabase.com:5432/postgres?sslmode=require' }}
+          DATABASE_USER: ${{ secrets.DATABASE_USER || 'postgres.ydjtrcjxhtmygytmebrk' }}
+          DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL || 'https://ydjtrcjxhtmygytmebrk.supabase.co' }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          MINING_SERVICE_URL: ${{ secrets.MINING_SERVICE_URL }}
 
       - name: Deploy
         run: flyctl deploy --remote-only --app deviante-api
