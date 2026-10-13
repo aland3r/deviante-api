@@ -37,6 +37,7 @@ import com.deviante.dto.validateProcessDeletion
 import com.deviante.dto.toResponse
 import com.deviante.dto.toSummaryResponse
 import com.deviante.model.ManagerRecord
+import com.deviante.variability.ClientVariant
 import com.deviante.variability.Feature
 import com.deviante.model.ProcessRecord
 import com.deviante.repository.ActivitiesRepository
@@ -79,12 +80,13 @@ private suspend fun ApplicationCall.requireProcess(
     processId: UUID,
 ): ProcessRecord? {
     val supabaseUser = requireSupabaseUser(authClient) ?: return null
-    managerRepository.findOrCreateForSupabaseUser(
+    val manager = managerRepository.findOrCreateForSupabaseUser(
         supabaseUser.id,
         supabaseUser.email,
         supabaseUser.fullNameHint,
     )
     val process = processRepository.findById(processId)
+        ?.takeIf { companyScope(manager, managerRepository).sees(it.managerId) }
     if (process == null) {
         respond(HttpStatusCode.NotFound, ErrorResponse("Processo não encontrado."))
         return null
@@ -130,6 +132,46 @@ private suspend fun ApplicationCall.requireSupabaseUser(authClient: SupabaseAuth
     return user
 }
 
+/** Cabeçalho com a empresa escolhida no login demo (setas do card). */
+const val COMPANY_HEADER = "X-Deviante-Company"
+
+/**
+ * Variante do produto em nome da qual a requisição age. Contas demo podem
+ * escolher a empresa no login; as demais recebem a do application.yaml.
+ */
+internal fun ApplicationCall.effectiveVariant(email: String): ClientVariant {
+    val chosen = request.headers[COMPANY_HEADER]
+        ?.takeIf { ManagerRepository.isDemoAccount(email) }
+        ?.let { runCatching { java.net.URLDecoder.decode(it, Charsets.UTF_8) }.getOrNull() }
+    return chosen?.let(AppConfig.productLine::variantForClient) ?: AppConfig.productLine.variantFor(email)
+}
+
+/**
+ * Dados por empresa: cada cliente enxerga só os processos e equipamentos das
+ * contas dele. Administrador, proprietário e mentor enxergam todos.
+ */
+class CompanyScope(val variant: ClientVariant, private val visible: Set<UUID>?, val ownerManagerId: UUID) {
+    val visibleManagers: Set<UUID>? get() = visible
+    fun sees(managerId: UUID): Boolean = visible == null || managerId in visible
+}
+
+private val SEES_ALL_ROLES = setOf("admin", "owner", "mentor")
+
+internal fun ApplicationCall.companyScope(manager: ManagerRecord, managerRepository: ManagerRepository): CompanyScope {
+    val variant = effectiveVariant(manager.email)
+    val accounts = AppConfig.productLine.accountsOf(variant.client)
+    val owners = managerRepository.idsForEmails(accounts)
+    // Registros novos ficam com a conta que guarda os dados da empresa escolhida.
+    val writer = if (manager.id in owners) manager.id
+    else accounts.firstOrNull()?.let { managerRepository.idsForEmails(listOf(it)).firstOrNull() } ?: manager.id
+    val visible = if (manager.role in SEES_ALL_ROLES) null else owners + manager.id
+    return CompanyScope(variant, visible, writer)
+}
+
+/** Nome da empresa dona de cada manager, para o administrador ver de quem é cada processo. */
+private fun companyLabels(managerRepository: ManagerRepository): Map<UUID, String> =
+    managerRepository.emailsById().mapValues { (_, email) -> AppConfig.productLine.variantFor(email).client }
+
 class FeatureGateConfig {
     lateinit var feature: Feature
     lateinit var authClient: SupabaseAuthClient
@@ -147,7 +189,7 @@ val FeatureGate = createRouteScopedPlugin("FeatureGate", ::FeatureGateConfig) {
     onCall { call ->
         val user = call.requireSupabaseUser(authClient) ?: return@onCall
         val manager = managerRepository.findOrCreateForSupabaseUser(user.id, user.email, user.fullNameHint)
-        val variant = AppConfig.productLine.variantFor(manager.email)
+        val variant = call.effectiveVariant(manager.email)
         if (!variant.has(feature)) {
             call.respond(
                 HttpStatusCode.Forbidden,
@@ -214,7 +256,7 @@ fun Application.configureRouting() {
                         supabaseUser.email,
                         supabaseUser.fullNameHint,
                     )
-                    call.respond(manager.toResponse(AppConfig.productLine.variantFor(manager.email)))
+                    call.respond(manager.toResponse(call.effectiveVariant(manager.email)))
                 }
 
                 put("/me") {
@@ -239,19 +281,23 @@ fun Application.configureRouting() {
                         call.respond(HttpStatusCode.NotFound, ErrorResponse("Conta não encontrada."))
                         return@put
                     }
-                    call.respond(updated.toResponse(AppConfig.productLine.variantFor(updated.email)))
+                    call.respond(updated.toResponse(call.effectiveVariant(updated.email)))
                 }
             }
 
             route("/processes") {
                 get {
                     val supabaseUser = call.requireSupabaseUser(authClient) ?: return@get
-                    managerRepository.findOrCreateForSupabaseUser(
+                    val manager = managerRepository.findOrCreateForSupabaseUser(
                         supabaseUser.id,
                         supabaseUser.email,
                         supabaseUser.fullNameHint,
                     )
-                    val processes = processRepository.listAll().map { it.toResponse() }
+                    val scope = call.companyScope(manager, managerRepository)
+                    val labels = companyLabels(managerRepository)
+                    val processes = processRepository.listAll()
+                        .filter { scope.sees(it.managerId) }
+                        .map { it.toResponse(company = labels[it.managerId]) }
                     call.respond(processes)
                 }
 
@@ -262,7 +308,7 @@ fun Application.configureRouting() {
                         supabaseUser.email,
                         supabaseUser.fullNameHint,
                     )
-                    val process = processRepository.create(manager.id)
+                    val process = processRepository.create(call.companyScope(manager, managerRepository).ownerManagerId)
                     call.respond(HttpStatusCode.Created, process.toResponse())
                 }
 
@@ -273,12 +319,13 @@ fun Application.configureRouting() {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
                         return@get
                     }
-                    managerRepository.findOrCreateForSupabaseUser(
+                    val manager = managerRepository.findOrCreateForSupabaseUser(
                         supabaseUser.id,
                         supabaseUser.email,
                         supabaseUser.fullNameHint,
                     )
                     val process = processRepository.findById(id)
+                        ?.takeIf { call.companyScope(manager, managerRepository).sees(it.managerId) }
                     if (process == null) {
                         call.respond(HttpStatusCode.NotFound, ErrorResponse("Processo não encontrado."))
                         return@get
@@ -306,11 +353,16 @@ fun Application.configureRouting() {
                         return@put
                     }
 
-                    managerRepository.findOrCreateForSupabaseUser(
+                    val manager = managerRepository.findOrCreateForSupabaseUser(
                         supabaseUser.id,
                         supabaseUser.email,
                         supabaseUser.fullNameHint,
                     )
+                    val visible = processRepository.findById(id)?.let { call.companyScope(manager, managerRepository).sees(it.managerId) } ?: false
+                    if (!visible) {
+                        call.respond(HttpStatusCode.NotFound, ErrorResponse("Processo não encontrado."))
+                        return@put
+                    }
                     val updated = processRepository.update(
                         id = id,
                         name = body.name.trim(),
@@ -357,7 +409,7 @@ fun Application.configureRouting() {
                 }
 
                 delete("/{id}") {
-                    call.requireDeleter(authClient, managerRepository) ?: return@delete
+                    val deleter = call.requireDeleter(authClient, managerRepository) ?: return@delete
                     val id = call.parameters["id"]?.let(::runCatchingUuid)
                     if (id == null) {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
@@ -365,6 +417,7 @@ fun Application.configureRouting() {
                     }
 
                     val process = processRepository.findById(id)
+                        ?.takeIf { call.companyScope(deleter, managerRepository).sees(it.managerId) }
                     if (process == null) {
                         call.respond(HttpStatusCode.NotFound, ErrorResponse("Processo não encontrado."))
                         return@delete
@@ -518,14 +571,14 @@ fun Application.configureRouting() {
                 get {
                     val user = call.requireSupabaseUser(authClient) ?: return@get
                     val manager = managerRepository.findOrCreateForSupabaseUser(user.id, user.email, user.fullNameHint)
-                    call.respond(maintenanceRepository.listEquipment(manager.id))
+                    call.respond(maintenanceRepository.listEquipment(call.companyScope(manager, managerRepository).visibleManagers))
                 }
                 post {
                     val user = call.requireSupabaseUser(authClient) ?: return@post
                     val manager = managerRepository.findOrCreateForSupabaseUser(user.id, user.email, user.fullNameHint)
                     val body = call.receive<EquipmentRequest>()
                     if (body.name.isBlank()) { call.respond(HttpStatusCode.BadRequest, ErrorResponse("Nome do equipamento é obrigatório.")); return@post }
-                    call.respond(HttpStatusCode.Created, maintenanceRepository.createEquipment(manager.id, body))
+                    call.respond(HttpStatusCode.Created, maintenanceRepository.createEquipment(call.companyScope(manager, managerRepository).ownerManagerId, body))
                 }
                 get("/{id}") {
                     call.requireSupabaseUser(authClient) ?: return@get
@@ -774,11 +827,11 @@ fun Application.configureRouting() {
             }
 
             route("/monitorings") {
-                get { val u = call.requireSupabaseUser(authClient) ?: return@get; managerRepository.findOrCreateForSupabaseUser(u.id,u.email,u.fullNameHint); call.respond(maintenanceRepository.listMonitorings()) }
+                get { val u = call.requireSupabaseUser(authClient) ?: return@get; val m = managerRepository.findOrCreateForSupabaseUser(u.id,u.email,u.fullNameHint); call.respond(maintenanceRepository.listMonitorings(call.companyScope(m, managerRepository).visibleManagers)) }
                 post {
                     val u = call.requireSupabaseUser(authClient) ?: return@post; val m = managerRepository.findOrCreateForSupabaseUser(u.id,u.email,u.fullNameHint)
                     val body = call.receive<CreateMonitoringRequest>().toMonitoringRequest()
-                    call.respond(HttpStatusCode.Created, maintenanceRepository.createMonitoring(m.id, body))
+                    call.respond(HttpStatusCode.Created, maintenanceRepository.createMonitoring(call.companyScope(m, managerRepository).ownerManagerId, body))
                 }
                 get("/{id}") { call.requireSupabaseUser(authClient) ?: return@get; val item = call.parameters["id"]?.let(::runCatchingUuid)?.let(maintenanceRepository::findMonitoring); if(item==null) call.respond(HttpStatusCode.NotFound,ErrorResponse("Monitoramento não encontrado.")) else call.respond(item) }
                 put("/{id}") { call.requireSupabaseUser(authClient) ?: return@put; val id=call.parameters["id"]?.let(::runCatchingUuid); val body=call.receive<MonitoringRequest>(); val item=id?.let{maintenanceRepository.updateMonitoring(it,body)}; if(item==null) call.respond(HttpStatusCode.NotFound,ErrorResponse("Monitoramento não encontrado.")) else call.respond(item) }
@@ -835,15 +888,17 @@ fun Application.configureRouting() {
                 route("/export.csv") {
                     requireFeature(Feature.SCHEDULE_EXPORT, authClient, managerRepository)
                     get {
-                        val rows = maintenanceRepository.listSchedules(null)
+                        val u = call.requireSupabaseUser(authClient) ?: return@get
+                        val m = managerRepository.findOrCreateForSupabaseUser(u.id, u.email, u.fullNameHint)
+                        val rows = maintenanceRepository.listSchedules(null, call.companyScope(m, managerRepository).visibleManagers)
                         call.respondText(schedulesToCsv(rows), ContentType.Text.CSV.withCharset(Charsets.UTF_8))
                     }
                 }
                 get {
                     val u=call.requireSupabaseUser(authClient)?:return@get
-                    managerRepository.findOrCreateForSupabaseUser(u.id,u.email,u.fullNameHint)
+                    val m = managerRepository.findOrCreateForSupabaseUser(u.id,u.email,u.fullNameHint)
                     val equipmentId = call.request.queryParameters["equipmentId"]?.let(::runCatchingUuid)
-                    call.respond(maintenanceRepository.listSchedules(equipmentId))
+                    call.respond(maintenanceRepository.listSchedules(equipmentId, call.companyScope(m, managerRepository).visibleManagers))
                 }
                 post {
                     val u=call.requireSupabaseUser(authClient)?:return@post; val m=managerRepository.findOrCreateForSupabaseUser(u.id,u.email,u.fullNameHint); val body=call.receive<MaintenanceScheduleRequest>()
@@ -1239,12 +1294,13 @@ fun Application.configureRouting() {
             route("/analyses") {
                 get {
                     val supabaseUser = call.requireSupabaseUser(authClient) ?: return@get
-                    managerRepository.findOrCreateForSupabaseUser(
+                    val manager = managerRepository.findOrCreateForSupabaseUser(
                         supabaseUser.id,
                         supabaseUser.email,
                         supabaseUser.fullNameHint,
                     )
-                    call.respond(analysisRepository.listSummaries().map { it.toSummaryResponse() })
+                    val scope = call.companyScope(manager, managerRepository)
+                    call.respond(analysisRepository.listSummaries(scope.visibleManagers).map { it.toSummaryResponse() })
                 }
 
                 post {

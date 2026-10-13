@@ -16,6 +16,7 @@ import org.jetbrains.exposed.sql.JoinType
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.insert
@@ -255,10 +256,13 @@ class AnalysisRepository {
             }
     }
 
-    fun listSummaries(): List<AnalysisRecord> = transaction {
-        AnalysesTable
+    /** Análises dos processos das contas visíveis (null = todas). */
+    fun listSummaries(managerIds: Set<UUID>? = null): List<AnalysisRecord> = transaction {
+        val query = AnalysesTable
             .join(ProcessesTable, JoinType.INNER, AnalysesTable.processId, ProcessesTable.id)
             .selectAll()
+        if (managerIds != null) query.where { ProcessesTable.managerId inList managerIds }
+        query
             .orderBy(AnalysesTable.updatedAt, SortOrder.DESC)
             .map { it.toAnalysisRecord() }
     }

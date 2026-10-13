@@ -60,6 +60,16 @@ class ProductLine(
 ) {
     fun variantFor(email: String): ClientVariant = byAccount[email.trim().lowercase()] ?: default
 
+    /** Todas as variantes configuradas (uma por cliente), na ordem do application.yaml. */
+    val variants: List<ClientVariant> = (byAccount.values + default).distinctBy { it.client }
+
+    fun variantForClient(client: String): ClientVariant? =
+        variants.firstOrNull { it.client.equals(client.trim(), ignoreCase = true) }
+
+    /** Contas que guardam os dados (processos, equipamentos) de um cliente. */
+    fun accountsOf(client: String): List<String> =
+        byAccount.filterValues { it.client.equals(client, ignoreCase = true) }.keys.toList()
+
     companion object {
         /** Lê a seção `productLine` do application.yaml. */
         fun fromConfig(config: ApplicationConfig): ProductLine {
@@ -68,16 +78,19 @@ class ProductLine(
                 client = section.propertyOrNull("defaultClient")?.getString() ?: "Cliente padrão",
                 plan = Plan.fromKey(section.property("defaultPlan").getString()),
             )
-            val byAccount = section.configList("clients").flatMap { client ->
+            val byAccount = linkedMapOf<String, ClientVariant>()
+            section.configList("clients").forEach { client ->
                 val variant = ClientVariant(
                     client = client.property("name").getString(),
                     plan = Plan.fromKey(client.property("plan").getString()),
                     exclusive = (client.propertyOrNull("exclusive")?.getList() ?: emptyList())
                         .map(Feature::fromKey).toSet(),
                 )
-                client.property("accounts").getList().map { it.trim().lowercase() to variant }
-            }.toMap()
-            return ProductLine(default, byAccount)
+                client.property("accounts").getList().forEach { byAccount[it.trim().lowercase()] = variant }
+            }
+            // A variante padrão usa o mesmo plano e as mesmas exclusivas do cliente de mesmo nome.
+            val resolvedDefault = byAccount.values.firstOrNull { it.client == default.client } ?: default
+            return ProductLine(resolvedDefault, byAccount)
         }
     }
 }

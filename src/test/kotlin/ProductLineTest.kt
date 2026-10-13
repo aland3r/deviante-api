@@ -50,6 +50,14 @@ class ProductLineTest {
     }
 
     @Test
+    fun `each company is a selectable variant with its own data accounts`() {
+        assertEquals(listOf("Deviante", "Metalúrgica Alfa", "Metalúrgica Beta", "Metalúrgica Gama"), productLine.variants.map { it.client })
+        assertEquals(Plan.ESSENCIAL, productLine.variantForClient("metalúrgica beta")?.plan)
+        assertEquals(listOf("demo-gestor@deviante.alander.io"), productLine.accountsOf("Metalúrgica Alfa"))
+        assertEquals(null, productLine.variantForClient("Empresa inexistente"))
+    }
+
+    @Test
     fun `unknown accounts get the default variant`() {
         assertEquals(Plan.MANUTENCAO, productLine.variantFor("alguem@example.com").plan)
     }

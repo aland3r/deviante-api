@@ -17,6 +17,7 @@ fun Application.configureHttp() {
         allowHeader(HttpHeaders.Authorization)
         allowHeader(HttpHeaders.ContentType)
         allowHeader(HttpHeaders.Accept)
+        allowHeader("X-Deviante-Company")
 
         allowCredentials = true
         anyHost()

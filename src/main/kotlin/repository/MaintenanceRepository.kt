@@ -45,9 +45,11 @@ data class StoredEquipmentAnalysis(
 )
 
 class MaintenanceRepository {
-    fun listEquipment(managerId: UUID): List<EquipmentResponse> = transaction {
-        val rows = EquipmentTable.selectAll()
-            .where { EquipmentTable.managerId eq managerId }
+    /** Equipamentos das contas visíveis (null = todas, para o administrador). */
+    fun listEquipment(managerIds: Set<UUID>?): List<EquipmentResponse> = transaction {
+        val query = EquipmentTable.selectAll()
+        if (managerIds != null) query.where { EquipmentTable.managerId inList managerIds }
+        val rows = query
             .orderBy(EquipmentTable.updatedAt, SortOrder.DESC)
             .toList()
         if (rows.isEmpty()) return@transaction emptyList()
@@ -131,8 +133,10 @@ class MaintenanceRepository {
         ProcessEquipmentTable.deleteWhere { (ProcessEquipmentTable.processId eq processId) and (ProcessEquipmentTable.equipmentId eq equipmentId) } > 0
     }
 
-    fun listMonitorings(): List<MonitoringResponse> = transaction {
-        MonitoringsTable.selectAll().orderBy(MonitoringsTable.updatedAt, SortOrder.DESC).map(::monitoring)
+    fun listMonitorings(managerIds: Set<UUID>? = null): List<MonitoringResponse> = transaction {
+        val query = MonitoringsTable.selectAll()
+        if (managerIds != null) query.where { MonitoringsTable.managerId inList managerIds }
+        query.orderBy(MonitoringsTable.updatedAt, SortOrder.DESC).map(::monitoring)
     }
 
     fun findMonitoring(id: UUID): MonitoringResponse? = transaction {
@@ -342,9 +346,11 @@ class MaintenanceRepository {
         MaintenanceRecommendationsTable.selectAll().where { MaintenanceRecommendationsTable.id eq id }.firstOrNull()?.let(::recommendation)
     }
 
-    fun listSchedules(equipmentId: UUID? = null): List<MaintenanceScheduleResponse> = transaction {
-        val query = MaintenanceSchedulesTable.selectAll()
-        if (equipmentId != null) query.where { MaintenanceSchedulesTable.equipmentId eq equipmentId }
+    /** Agenda, opcionalmente de um equipamento e só dos equipamentos das contas visíveis. */
+    fun listSchedules(equipmentId: UUID? = null, managerIds: Set<UUID>? = null): List<MaintenanceScheduleResponse> = transaction {
+        val query = MaintenanceSchedulesTable.innerJoin(EquipmentTable).selectAll()
+        if (equipmentId != null) query.andWhere { MaintenanceSchedulesTable.equipmentId eq equipmentId }
+        if (managerIds != null) query.andWhere { EquipmentTable.managerId inList managerIds }
         query.orderBy(MaintenanceSchedulesTable.scheduledStart).map(::schedule)
     }
 

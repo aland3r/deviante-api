@@ -12,6 +12,8 @@ data class ProcessResponse(
     val sector: String,
     val createdAt: String,
     val updatedAt: String,
+    // Variabilidade: empresa dona do processo (aparece para quem vê todas).
+    val company: String? = null,
 )
 
 @Serializable
@@ -52,11 +54,12 @@ fun validateProcessDeletion(
     }
 }
 
-fun ProcessRecord.toResponse() = ProcessResponse(
+fun ProcessRecord.toResponse(company: String? = null) = ProcessResponse(
     id = id.toString(),
     name = name,
     description = description,
     sector = sector,
     createdAt = createdAt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
     updatedAt = updatedAt.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
+    company = company,
 )
