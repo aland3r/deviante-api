@@ -8,6 +8,7 @@ object ProcessesTable : Table(name = "processes") {
 
     val id = uuid("id")
     val managerId = uuid("manager_id").references(ManagersTable.id)
+    val businessId = uuid("business_id").references(BusinessesTable.id)
     val name = varchar("name", 100)
     val companyName = varchar("company_name", 255)
     val description = text("description")

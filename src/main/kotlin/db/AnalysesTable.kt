@@ -8,6 +8,8 @@ object AnalysesTable : Table(name = "analyses") {
 
     val id = uuid("id")
     val processId = uuid("process_id").references(ProcessesTable.id)
+    // preenchida no banco a partir do processo (trigger analyses_business_id)
+    val businessId = uuid("business_id").references(BusinessesTable.id).nullable()
     val eventLogId = uuid("event_log_id").references(EventLogsTable.id).nullable()
     val name = varchar("name", 200)
     val method = varchar("method", 50).default("adwin")

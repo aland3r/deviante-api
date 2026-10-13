@@ -26,26 +26,24 @@ mining:
 # Variabilidade da linha de produto (Reuso 03): qual variante cada cliente
 # recebe. Planos e funcionalidades estão em variability/ProductLine.kt.
 productLine:
+  # Empresa de quem entra pelo Google; as demais são as do login demo.
+  # A empresa de cada usuário e a dona de cada registro ficam no banco
+  # (deviante.businesses e business_id); aqui fica o que cada uma contratou.
   defaultClient: "Deviante"
   defaultPlan: manutencao
   clients:
     - name: "Deviante"
       plan: manutencao
       exclusive: [schedule-export]
-      accounts:
-        - demo-administrador@deviante.alander.io
     - name: "Metalúrgica Alfa"
       plan: manutencao
       exclusive: [schedule-export]
-      accounts:
-        - demo-gestor@deviante.alander.io
     - name: "Metalúrgica Beta"
       plan: essencial
       exclusive: []
-      accounts:
-        - demo-operador@deviante.alander.io
     - name: "Metalúrgica Gama"
       plan: manutencao
       exclusive: []
-      accounts:
-        - demo-tecnico@deviante.alander.io
+    - name: "Metalúrgica Delta"
+      plan: essencial
+      exclusive: []

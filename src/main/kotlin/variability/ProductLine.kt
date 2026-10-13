@@ -56,41 +56,35 @@ data class ClientVariant(
 
 class ProductLine(
     private val default: ClientVariant,
-    private val byAccount: Map<String, ClientVariant>,
-) {
-    fun variantFor(email: String): ClientVariant = byAccount[email.trim().lowercase()] ?: default
-
     /** Todas as variantes configuradas (uma por cliente), na ordem do application.yaml. */
-    val variants: List<ClientVariant> = (byAccount.values + default).distinctBy { it.client }
-
+    val variants: List<ClientVariant>,
+) {
+    /**
+     * Variante de uma empresa pelo nome. A empresa a que cada usuário pertence
+     * fica no banco (business_id); aqui fica só o que cada uma contratou.
+     */
     fun variantForClient(client: String): ClientVariant? =
         variants.firstOrNull { it.client.equals(client.trim(), ignoreCase = true) }
 
-    /** Contas que guardam os dados (processos, equipamentos) de um cliente. */
-    fun accountsOf(client: String): List<String> =
-        byAccount.filterValues { it.client.equals(client, ignoreCase = true) }.keys.toList()
+    fun variantOrDefault(client: String?): ClientVariant = client?.let(::variantForClient) ?: default
 
     companion object {
         /** Lê a seção `productLine` do application.yaml. */
         fun fromConfig(config: ApplicationConfig): ProductLine {
             val section = config.config("productLine")
-            val default = ClientVariant(
-                client = section.propertyOrNull("defaultClient")?.getString() ?: "Cliente padrão",
-                plan = Plan.fromKey(section.property("defaultPlan").getString()),
-            )
-            val byAccount = linkedMapOf<String, ClientVariant>()
-            section.configList("clients").forEach { client ->
-                val variant = ClientVariant(
+            val variants = section.configList("clients").map { client ->
+                ClientVariant(
                     client = client.property("name").getString(),
                     plan = Plan.fromKey(client.property("plan").getString()),
                     exclusive = (client.propertyOrNull("exclusive")?.getList() ?: emptyList())
                         .map(Feature::fromKey).toSet(),
                 )
-                client.property("accounts").getList().forEach { byAccount[it.trim().lowercase()] = variant }
             }
+            val defaultClient = section.propertyOrNull("defaultClient")?.getString() ?: "Cliente padrão"
             // A variante padrão usa o mesmo plano e as mesmas exclusivas do cliente de mesmo nome.
-            val resolvedDefault = byAccount.values.firstOrNull { it.client == default.client } ?: default
-            return ProductLine(resolvedDefault, byAccount)
+            val default = variants.firstOrNull { it.client == defaultClient }
+                ?: ClientVariant(defaultClient, Plan.fromKey(section.property("defaultPlan").getString()))
+            return ProductLine(default, variants)
         }
     }
 }

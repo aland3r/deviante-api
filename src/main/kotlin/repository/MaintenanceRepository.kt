@@ -45,10 +45,10 @@ data class StoredEquipmentAnalysis(
 )
 
 class MaintenanceRepository {
-    /** Equipamentos das contas visíveis (null = todas, para o administrador). */
-    fun listEquipment(managerIds: Set<UUID>?): List<EquipmentResponse> = transaction {
+    /** Equipamentos das empresas visíveis (null = todas, para o administrador). */
+    fun listEquipment(businessIds: Set<UUID>?): List<EquipmentResponse> = transaction {
         val query = EquipmentTable.selectAll()
-        if (managerIds != null) query.where { EquipmentTable.managerId inList managerIds }
+        if (businessIds != null) query.where { EquipmentTable.businessId inList businessIds }
         val rows = query
             .orderBy(EquipmentTable.updatedAt, SortOrder.DESC)
             .toList()
@@ -99,10 +99,10 @@ class MaintenanceRepository {
         EquipmentTable.selectAll().where { EquipmentTable.id eq id }.firstOrNull()?.let(::equipment)
     }
 
-    fun createEquipment(managerId: UUID, body: EquipmentRequest): EquipmentResponse = transaction {
+    fun createEquipment(managerId: UUID, businessId: UUID, body: EquipmentRequest): EquipmentResponse = transaction {
         val id = UUID.randomUUID(); val now = OffsetDateTime.now()
         EquipmentTable.insert {
-            it[EquipmentTable.id] = id; it[EquipmentTable.managerId] = managerId
+            it[EquipmentTable.id] = id; it[EquipmentTable.managerId] = managerId; it[EquipmentTable.businessId] = businessId
             assignEquipment(it, body); it[EquipmentTable.createdAt] = now; it[EquipmentTable.updatedAt] = now
         }
         findEquipment(id)!!
@@ -133,9 +133,9 @@ class MaintenanceRepository {
         ProcessEquipmentTable.deleteWhere { (ProcessEquipmentTable.processId eq processId) and (ProcessEquipmentTable.equipmentId eq equipmentId) } > 0
     }
 
-    fun listMonitorings(managerIds: Set<UUID>? = null): List<MonitoringResponse> = transaction {
+    fun listMonitorings(businessIds: Set<UUID>? = null): List<MonitoringResponse> = transaction {
         val query = MonitoringsTable.selectAll()
-        if (managerIds != null) query.where { MonitoringsTable.managerId inList managerIds }
+        if (businessIds != null) query.where { MonitoringsTable.businessId inList businessIds }
         query.orderBy(MonitoringsTable.updatedAt, SortOrder.DESC).map(::monitoring)
     }
 
@@ -143,10 +143,10 @@ class MaintenanceRepository {
         MonitoringsTable.selectAll().where { MonitoringsTable.id eq id }.firstOrNull()?.let(::monitoring)
     }
 
-    fun createMonitoring(managerId: UUID, body: MonitoringRequest): MonitoringResponse = transaction {
+    fun createMonitoring(managerId: UUID, businessId: UUID, body: MonitoringRequest): MonitoringResponse = transaction {
         val id = UUID.randomUUID(); val now = OffsetDateTime.now()
         MonitoringsTable.insert {
-            it[MonitoringsTable.id] = id; it[MonitoringsTable.managerId] = managerId
+            it[MonitoringsTable.id] = id; it[MonitoringsTable.managerId] = managerId; it[MonitoringsTable.businessId] = businessId
             assignMonitoring(it, body); it[MonitoringsTable.createdAt] = now; it[MonitoringsTable.updatedAt] = now
         }
         findMonitoring(id)!!
@@ -346,11 +346,11 @@ class MaintenanceRepository {
         MaintenanceRecommendationsTable.selectAll().where { MaintenanceRecommendationsTable.id eq id }.firstOrNull()?.let(::recommendation)
     }
 
-    /** Agenda, opcionalmente de um equipamento e só dos equipamentos das contas visíveis. */
-    fun listSchedules(equipmentId: UUID? = null, managerIds: Set<UUID>? = null): List<MaintenanceScheduleResponse> = transaction {
-        val query = MaintenanceSchedulesTable.innerJoin(EquipmentTable).selectAll()
+    /** Agenda, opcionalmente de um equipamento e só das empresas visíveis. */
+    fun listSchedules(equipmentId: UUID? = null, businessIds: Set<UUID>? = null): List<MaintenanceScheduleResponse> = transaction {
+        val query = MaintenanceSchedulesTable.selectAll()
         if (equipmentId != null) query.andWhere { MaintenanceSchedulesTable.equipmentId eq equipmentId }
-        if (managerIds != null) query.andWhere { EquipmentTable.managerId inList managerIds }
+        if (businessIds != null) query.andWhere { MaintenanceSchedulesTable.businessId inList businessIds }
         query.orderBy(MaintenanceSchedulesTable.scheduledStart).map(::schedule)
     }
 

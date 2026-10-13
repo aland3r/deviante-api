@@ -256,12 +256,12 @@ class AnalysisRepository {
             }
     }
 
-    /** Análises dos processos das contas visíveis (null = todas). */
-    fun listSummaries(managerIds: Set<UUID>? = null): List<AnalysisRecord> = transaction {
+    /** Análises das empresas visíveis (null = todas). */
+    fun listSummaries(businessIds: Set<UUID>? = null): List<AnalysisRecord> = transaction {
         val query = AnalysesTable
             .join(ProcessesTable, JoinType.INNER, AnalysesTable.processId, ProcessesTable.id)
             .selectAll()
-        if (managerIds != null) query.where { ProcessesTable.managerId inList managerIds }
+        if (businessIds != null) query.where { AnalysesTable.businessId inList businessIds }
         query
             .orderBy(AnalysesTable.updatedAt, SortOrder.DESC)
             .map { it.toAnalysisRecord() }

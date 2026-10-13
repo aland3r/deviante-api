@@ -38,21 +38,6 @@ class ManagerRepository {
         internal fun isDemoAccount(email: String): Boolean = email.trim().lowercase() in DEMO_ROLES
     }
 
-    /** Ids dos managers com esses e-mails (as contas que guardam os dados de um cliente). */
-    fun idsForEmails(emails: Collection<String>): Set<UUID> = transaction {
-        if (emails.isEmpty()) return@transaction emptySet()
-        (ManagersTable innerJoin UsersTable).selectAll()
-            .where { UsersTable.email inList emails.map { it.trim().lowercase() } }
-            .map { it[ManagersTable.id] }
-            .toSet()
-    }
-
-    /** E-mail de cada manager, para rotular de qual cliente é um processo. */
-    fun emailsById(): Map<UUID, String> = transaction {
-        (ManagersTable innerJoin UsersTable).selectAll()
-            .associate { it[ManagersTable.id] to it[UsersTable.email].trim().lowercase() }
-    }
-
     private fun detectRole(email: String): String = roleForEmail(email)
 
     fun findByUserId(userId: UUID): ManagerRecord? = transaction {
@@ -154,6 +139,7 @@ class ManagerRepository {
         email = this[UsersTable.email],
         fullName = this[ManagersTable.fullName],
         role = this[ManagersTable.role],
+        businessId = this[ManagersTable.businessId],
         createdAt = this[ManagersTable.createdAt],
         updatedAt = this[ManagersTable.updatedAt],
     )

@@ -33,13 +33,14 @@ class ProcessRepository {
     }
 
     /** Figma-style instant creation — default name, no form required up front. */
-    fun create(managerId: UUID): ProcessRecord = transaction {
+    fun create(managerId: UUID, businessId: UUID): ProcessRecord = transaction {
         val now = OffsetDateTime.now()
         val id = UUID.randomUUID()
 
         ProcessesTable.insert {
             it[ProcessesTable.id] = id
             it[ProcessesTable.managerId] = managerId
+            it[ProcessesTable.businessId] = businessId
             it[ProcessesTable.name] = DEFAULT_PROCESS_NAME
             it[ProcessesTable.companyName] = ""
             it[ProcessesTable.description] = ""
@@ -51,6 +52,7 @@ class ProcessRepository {
         ProcessRecord(
             id = id,
             managerId = managerId,
+            businessId = businessId,
             name = DEFAULT_PROCESS_NAME,
             companyName = "",
             description = "",
@@ -96,6 +98,7 @@ class ProcessRepository {
     private fun ResultRow.toProcessRecord() = ProcessRecord(
         id = this[ProcessesTable.id],
         managerId = this[ProcessesTable.managerId],
+        businessId = this[ProcessesTable.businessId],
         name = this[ProcessesTable.name],
         companyName = this[ProcessesTable.companyName],
         description = this[ProcessesTable.description],

@@ -23,12 +23,12 @@ class ProductLineTest {
     private val productLine = ProductLine.fromConfig(YamlConfig("application.yaml")!!)
 
     @Test
-    fun `each client receives its own variant`() {
-        val alfa = productLine.variantFor("demo-gestor@deviante.alander.io")
-        val beta = productLine.variantFor("demo-operador@deviante.alander.io")
-        val gama = productLine.variantFor("DEMO-TECNICO@deviante.alander.io ")
+    fun `each company receives its own variant`() {
+        val alfa = productLine.variantOrDefault("Metalúrgica Alfa")
+        val beta = productLine.variantOrDefault("metalúrgica beta ")
+        val gama = productLine.variantOrDefault("Metalúrgica Gama")
+        val delta = productLine.variantOrDefault("Metalúrgica Delta")
 
-        assertEquals("Metalúrgica Alfa", alfa.client)
         assertEquals(Plan.MANUTENCAO, alfa.plan)
         assertTrue(alfa.has(Feature.SCHEDULE_EXPORT))
 
@@ -37,9 +37,10 @@ class ProductLineTest {
         assertFalse(beta.has(Feature.EQUIPMENT))
         assertFalse(beta.has(Feature.SCHEDULES))
 
-        assertEquals("Metalúrgica Gama", gama.client)
         assertTrue(gama.has(Feature.SCHEDULES))
         assertFalse(gama.has(Feature.SCHEDULE_EXPORT))
+
+        assertEquals(Plan.ESSENCIAL, delta.plan)
     }
 
     @Test
@@ -50,16 +51,20 @@ class ProductLineTest {
     }
 
     @Test
-    fun `each company is a selectable variant with its own data accounts`() {
-        assertEquals(listOf("Deviante", "Metalúrgica Alfa", "Metalúrgica Beta", "Metalúrgica Gama"), productLine.variants.map { it.client })
-        assertEquals(Plan.ESSENCIAL, productLine.variantForClient("metalúrgica beta")?.plan)
-        assertEquals(listOf("demo-gestor@deviante.alander.io"), productLine.accountsOf("Metalúrgica Alfa"))
+    fun `the four demo companies and Deviante are configured`() {
+        assertEquals(
+            listOf("Deviante", "Metalúrgica Alfa", "Metalúrgica Beta", "Metalúrgica Gama", "Metalúrgica Delta"),
+            productLine.variants.map { it.client },
+        )
         assertEquals(null, productLine.variantForClient("Empresa inexistente"))
     }
 
     @Test
-    fun `unknown accounts get the default variant`() {
-        assertEquals(Plan.MANUTENCAO, productLine.variantFor("alguem@example.com").plan)
+    fun `unknown companies get the default variant`() {
+        val fallback = productLine.variantOrDefault("Empresa inexistente")
+        assertEquals("Deviante", fallback.client)
+        assertEquals(Plan.MANUTENCAO, fallback.plan)
+        assertEquals("Deviante", productLine.variantOrDefault(null).client)
     }
 
     @Test

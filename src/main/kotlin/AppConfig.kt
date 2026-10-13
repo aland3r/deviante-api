@@ -37,7 +37,7 @@ object AppConfig {
             ?: "http://localhost:8000"
         // Sem a seção productLine (ex.: testes), todo cliente recebe o plano completo.
         productLine = runCatching { ProductLine.fromConfig(config) }
-            .getOrElse { ProductLine(ClientVariant("Cliente padrão", Plan.MANUTENCAO), emptyMap()) }
+            .getOrElse { ProductLine(ClientVariant("Cliente padrão", Plan.MANUTENCAO), emptyList()) }
         loaded = true
     }
 }

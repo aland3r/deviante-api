@@ -11,6 +11,7 @@ data class ManagerRecord(
     val role: String = "manager", // owner, admin, manager, operator, technician, mentor
     val createdAt: OffsetDateTime,
     val updatedAt: OffsetDateTime,
+    val businessId: UUID? = null, // empresa a que o usuário pertence
 ) {
     fun isOwner(): Boolean = role == "owner"
 
