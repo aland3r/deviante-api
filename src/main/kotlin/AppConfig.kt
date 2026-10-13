@@ -1,5 +1,8 @@
 package com.deviante
 
+import com.deviante.variability.ClientVariant
+import com.deviante.variability.Plan
+import com.deviante.variability.ProductLine
 import io.ktor.server.config.ApplicationConfig
 
 /**
@@ -15,6 +18,7 @@ object AppConfig {
     lateinit var supabaseUrl: String; private set
     lateinit var supabaseAnonKey: String; private set
     lateinit var miningUrl: String; private set
+    lateinit var productLine: ProductLine; private set
 
     @Volatile
     private var loaded = false
@@ -31,6 +35,9 @@ object AppConfig {
         miningUrl = config.propertyOrNull("mining.url")?.getString()
             ?: System.getenv("MINING_SERVICE_URL")
             ?: "http://localhost:8000"
+        // Sem a seção productLine (ex.: testes), todo cliente recebe o plano completo.
+        productLine = runCatching { ProductLine.fromConfig(config) }
+            .getOrElse { ProductLine(ClientVariant("Cliente padrão", Plan.MANUTENCAO), emptyMap()) }
         loaded = true
     }
 }

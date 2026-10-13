@@ -22,3 +22,30 @@ supabase:
 # calls it. See gestalt-kit/docs/architecture.md § Process mining exception.
 mining:
   url: ${MINING_SERVICE_URL:http://localhost:8000}
+
+# Variabilidade da linha de produto (Reuso 03): qual variante cada cliente
+# recebe. Planos e funcionalidades estão em variability/ProductLine.kt.
+productLine:
+  defaultClient: "Deviante"
+  defaultPlan: manutencao
+  clients:
+    - name: "Deviante"
+      plan: manutencao
+      exclusive: [schedule-export]
+      accounts:
+        - demo-administrador@deviante.alander.io
+    - name: "Metalúrgica Alfa"
+      plan: manutencao
+      exclusive: [schedule-export]
+      accounts:
+        - demo-gestor@deviante.alander.io
+    - name: "Metalúrgica Beta"
+      plan: essencial
+      exclusive: []
+      accounts:
+        - demo-operador@deviante.alander.io
+    - name: "Metalúrgica Gama"
+      plan: manutencao
+      exclusive: []
+      accounts:
+        - demo-tecnico@deviante.alander.io

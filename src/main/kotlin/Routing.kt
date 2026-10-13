@@ -1,6 +1,7 @@
 package com.deviante
 
 import com.deviante.dto.CreateActivityRequest
+import com.deviante.dto.MaintenanceScheduleResponse
 import com.deviante.dto.AnalysisDriftResponse
 import com.deviante.dto.AnalysisScopeResponse
 import com.deviante.dto.CreateAnalysisRequest
@@ -36,6 +37,7 @@ import com.deviante.dto.validateProcessDeletion
 import com.deviante.dto.toResponse
 import com.deviante.dto.toSummaryResponse
 import com.deviante.model.ManagerRecord
+import com.deviante.variability.Feature
 import com.deviante.model.ProcessRecord
 import com.deviante.repository.ActivitiesRepository
 import com.deviante.repository.ActivityDeletion
@@ -52,6 +54,7 @@ import com.deviante.repository.ProcessRepository
 import io.ktor.http.*
 import io.ktor.http.content.*
 import io.ktor.server.application.*
+import io.ktor.util.AttributeKey
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
@@ -106,7 +109,11 @@ private suspend fun ApplicationCall.receiveUploadedFile(): Pair<String, ByteArra
     return result
 }
 
+private val SupabaseUserKey = AttributeKey<SupabaseUser>("SupabaseUser")
+
 private suspend fun ApplicationCall.requireSupabaseUser(authClient: SupabaseAuthClient): SupabaseUser? {
+    // Já verificado nesta requisição (ex.: pelo FeatureGate): não pergunta ao Supabase de novo.
+    attributes.getOrNull(SupabaseUserKey)?.let { return it }
     val header = request.headers[HttpHeaders.Authorization]
     val token = header?.removePrefix("Bearer ")?.trim()
     if (token.isNullOrBlank()) {
@@ -119,7 +126,43 @@ private suspend fun ApplicationCall.requireSupabaseUser(authClient: SupabaseAuth
         respond(HttpStatusCode.Unauthorized, ErrorResponse("Sessão inválida ou expirada."))
         return null
     }
+    attributes.put(SupabaseUserKey, user)
     return user
+}
+
+class FeatureGateConfig {
+    lateinit var feature: Feature
+    lateinit var authClient: SupabaseAuthClient
+    lateinit var managerRepository: ManagerRepository
+}
+
+/**
+ * Ponto de variação na API: instalado numa rota, só deixa passar o cliente
+ * cuja variante do produto inclui a funcionalidade; os outros recebem 403.
+ */
+val FeatureGate = createRouteScopedPlugin("FeatureGate", ::FeatureGateConfig) {
+    val feature = pluginConfig.feature
+    val authClient = pluginConfig.authClient
+    val managerRepository = pluginConfig.managerRepository
+    onCall { call ->
+        val user = call.requireSupabaseUser(authClient) ?: return@onCall
+        val manager = managerRepository.findOrCreateForSupabaseUser(user.id, user.email, user.fullNameHint)
+        val variant = AppConfig.productLine.variantFor(manager.email)
+        if (!variant.has(feature)) {
+            call.respond(
+                HttpStatusCode.Forbidden,
+                ErrorResponse("Este recurso não faz parte do plano ${variant.plan.label} de ${variant.client}."),
+            )
+        }
+    }
+}
+
+private fun Route.requireFeature(feature: Feature, authClient: SupabaseAuthClient, managerRepository: ManagerRepository) {
+    install(FeatureGate) {
+        this.feature = feature
+        this.authClient = authClient
+        this.managerRepository = managerRepository
+    }
 }
 
 /**
@@ -171,7 +214,7 @@ fun Application.configureRouting() {
                         supabaseUser.email,
                         supabaseUser.fullNameHint,
                     )
-                    call.respond(manager.toResponse())
+                    call.respond(manager.toResponse(AppConfig.productLine.variantFor(manager.email)))
                 }
 
                 put("/me") {
@@ -196,7 +239,7 @@ fun Application.configureRouting() {
                         call.respond(HttpStatusCode.NotFound, ErrorResponse("Conta não encontrada."))
                         return@put
                     }
-                    call.respond(updated.toResponse())
+                    call.respond(updated.toResponse(AppConfig.productLine.variantFor(updated.email)))
                 }
             }
 
@@ -471,6 +514,7 @@ fun Application.configureRouting() {
             }
 
             route("/equipment") {
+                requireFeature(Feature.EQUIPMENT, authClient, managerRepository)
                 get {
                     val user = call.requireSupabaseUser(authClient) ?: return@get
                     val manager = managerRepository.findOrCreateForSupabaseUser(user.id, user.email, user.fullNameHint)
@@ -786,6 +830,15 @@ fun Application.configureRouting() {
             }
 
             route("/schedules") {
+                requireFeature(Feature.SCHEDULES, authClient, managerRepository)
+                // Função exclusiva de um cliente: só existe na variante que a contratou.
+                route("/export.csv") {
+                    requireFeature(Feature.SCHEDULE_EXPORT, authClient, managerRepository)
+                    get {
+                        val rows = maintenanceRepository.listSchedules(null)
+                        call.respondText(schedulesToCsv(rows), ContentType.Text.CSV.withCharset(Charsets.UTF_8))
+                    }
+                }
                 get {
                     val u=call.requireSupabaseUser(authClient)?:return@get
                     managerRepository.findOrCreateForSupabaseUser(u.id,u.email,u.fullNameHint)
@@ -1552,4 +1605,14 @@ private fun runCatchingUuid(value: String): UUID? = try {
     UUID.fromString(value)
 } catch (_: IllegalArgumentException) {
     null
+}
+
+/** CSV da agenda de manutenção (separador `;`, como o Excel em português espera). */
+internal fun schedulesToCsv(rows: List<MaintenanceScheduleResponse>): String {
+    fun cell(value: String?) = "\"" + (value ?: "").replace("\"", "\"\"") + "\""
+    val header = listOf("titulo", "equipamento", "inicio", "fim", "situacao", "observacoes").joinToString(";")
+    val lines = rows.map { row ->
+        listOf(row.title, row.equipmentId, row.scheduledStart, row.scheduledEnd, row.status, row.notes).joinToString(";") { cell(it) }
+    }
+    return (listOf(header) + lines).joinToString("\n", postfix = "\n")
 }
