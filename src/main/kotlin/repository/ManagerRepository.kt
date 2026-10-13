@@ -16,10 +16,21 @@ class ManagerRepository {
         private val OWNER_EMAILS = setOf("design@alander.io", "alanderavila@gmail.com")
         private val MENTOR_EMAILS = setOf("pafileiro@gmail.com", "erloures@gmail.com")
 
-        internal fun roleForEmail(email: String): String = when {
-            email.trim().lowercase() in OWNER_EMAILS -> "owner"
-            email.trim().lowercase() in MENTOR_EMAILS -> "mentor"
-            else -> "manager"
+        // Contas de demonstração do login (RF-01/RF-02): um papel por conta.
+        private val DEMO_ROLES = mapOf(
+            "demo-administrador@deviante.alander.io" to "admin",
+            "demo-gestor@deviante.alander.io" to "manager",
+            "demo-operador@deviante.alander.io" to "operator",
+            "demo-tecnico@deviante.alander.io" to "technician",
+        )
+
+        internal fun roleForEmail(email: String): String {
+            val normalized = email.trim().lowercase()
+            return when {
+                normalized in OWNER_EMAILS -> "owner"
+                normalized in MENTOR_EMAILS -> "mentor"
+                else -> DEMO_ROLES[normalized] ?: "manager"
+            }
         }
     }
 

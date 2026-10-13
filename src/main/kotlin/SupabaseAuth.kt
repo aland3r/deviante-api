@@ -72,7 +72,6 @@ class SupabaseAuthClient(private val baseUrl: String, private val anonKey: Strin
 }
 
 fun Application.configureSupabaseAuthClient(): SupabaseAuthClient {
-    val url = environment.config.propertyOrNull("supabase.url")?.getString().orEmpty()
-    val anonKey = environment.config.propertyOrNull("supabase.anonKey")?.getString().orEmpty()
-    return SupabaseAuthClient(url, anonKey)
+    AppConfig.init(environment.config)
+    return SupabaseAuthClient(AppConfig.supabaseUrl, AppConfig.supabaseAnonKey)
 }

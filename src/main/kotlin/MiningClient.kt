@@ -257,10 +257,8 @@ class MiningClient(private val baseUrl: String) {
 }
 
 fun Application.configureMiningClient(): MiningClient {
-    val baseUrl = environment.config
-        .propertyOrNull("mining.url")?.getString()
-        ?: System.getenv("MINING_SERVICE_URL")
-        ?: "http://localhost:8000"
+    AppConfig.init(environment.config)
+    val baseUrl = AppConfig.miningUrl
 
     log.info("[MiningClient] process-mining service at $baseUrl")
     return MiningClient(baseUrl)

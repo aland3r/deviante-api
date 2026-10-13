@@ -1,6 +1,7 @@
 package com.deviante.repository
 
 import com.deviante.db.ActivitiesTable
+import com.deviante.db.OperationsTable
 import com.deviante.db.ProcessActivitiesTable
 import com.deviante.model.ActivityRecord
 import org.jetbrains.exposed.sql.JoinType
@@ -16,6 +17,8 @@ import org.jetbrains.exposed.sql.transactions.transaction
 import org.jetbrains.exposed.sql.update
 import java.time.OffsetDateTime
 import java.util.UUID
+
+enum class ActivityDeletion { DELETED, NOT_FOUND, IN_USE }
 
 class ActivitiesRepository {
     fun listAll(): List<ActivityRecord> = transaction {
@@ -74,6 +77,17 @@ class ActivitiesRepository {
         if (updated == 0) return@transaction null
 
         findById(id)
+    }
+
+    /**
+     * Exclui a atividade. Os vínculos com processos caem em cascata no banco;
+     * se alguma operação de log estiver mapeada para ela, a exclusão é recusada.
+     */
+    fun delete(id: UUID): ActivityDeletion = transaction {
+        val inUse = OperationsTable.selectAll().where { OperationsTable.activityId eq id }.limit(1).any()
+        if (inUse) return@transaction ActivityDeletion.IN_USE
+        val deleted = ActivitiesTable.deleteWhere { ActivitiesTable.id eq id }
+        if (deleted > 0) ActivityDeletion.DELETED else ActivityDeletion.NOT_FOUND
     }
 
     fun linkToProcess(processId: UUID, activityId: UUID): Boolean = transaction {

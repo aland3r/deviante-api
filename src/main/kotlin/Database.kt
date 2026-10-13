@@ -7,9 +7,10 @@ import io.ktor.server.application.*
 import org.jetbrains.exposed.sql.Database
 
 fun Application.configureDatabase() {
-    val jdbcUrl = environment.config.property("database.jdbcUrl").getString()
-    val user = environment.config.property("database.user").getString()
-    val password = environment.config.property("database.password").getString()
+    AppConfig.init(environment.config)
+    val jdbcUrl = AppConfig.jdbcUrl
+    val user = AppConfig.dbUser
+    val password = AppConfig.dbPassword
 
     val hikariConfig = HikariConfig().apply {
         this.jdbcUrl = jdbcUrl

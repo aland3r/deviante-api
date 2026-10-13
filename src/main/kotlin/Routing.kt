@@ -35,8 +35,10 @@ import com.deviante.dto.UpdateProcessRequest
 import com.deviante.dto.validateProcessDeletion
 import com.deviante.dto.toResponse
 import com.deviante.dto.toSummaryResponse
+import com.deviante.model.ManagerRecord
 import com.deviante.model.ProcessRecord
 import com.deviante.repository.ActivitiesRepository
+import com.deviante.repository.ActivityDeletion
 import com.deviante.repository.AnalysisRepository
 import com.deviante.repository.AnalysisSeriesException
 import com.deviante.repository.EventLogIngestionRepository
@@ -118,6 +120,23 @@ private suspend fun ApplicationCall.requireSupabaseUser(authClient: SupabaseAuth
         return null
     }
     return user
+}
+
+/**
+ * Exclusões (processo, atividade, equipamento, agenda) são permitidas só ao
+ * administrador e ao gestor; operador, técnico e mentor recebem 403.
+ */
+private suspend fun ApplicationCall.requireDeleter(
+    authClient: SupabaseAuthClient,
+    managerRepository: ManagerRepository,
+): ManagerRecord? {
+    val user = requireSupabaseUser(authClient) ?: return null
+    val manager = managerRepository.findOrCreateForSupabaseUser(user.id, user.email, user.fullNameHint)
+    if (!manager.canDelete()) {
+        respond(HttpStatusCode.Forbidden, ErrorResponse("Somente o administrador ou o gestor pode excluir."))
+        return null
+    }
+    return manager
 }
 
 fun Application.configureRouting() {
@@ -295,22 +314,10 @@ fun Application.configureRouting() {
                 }
 
                 delete("/{id}") {
-                    val supabaseUser = call.requireSupabaseUser(authClient) ?: return@delete
+                    call.requireDeleter(authClient, managerRepository) ?: return@delete
                     val id = call.parameters["id"]?.let(::runCatchingUuid)
                     if (id == null) {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
-                        return@delete
-                    }
-                    val manager = managerRepository.findOrCreateForSupabaseUser(
-                        supabaseUser.id,
-                        supabaseUser.email,
-                        supabaseUser.fullNameHint,
-                    )
-                    if (!manager.isOwner()) {
-                        call.respond(
-                            HttpStatusCode.Forbidden,
-                            ErrorResponse("Somente o proprietário pode excluir processos."),
-                        )
                         return@delete
                     }
 
@@ -426,6 +433,24 @@ fun Application.configureRouting() {
                     }
                     call.respond(updated.toResponse())
                 }
+
+                delete("/{id}") {
+                    call.requireDeleter(authClient, managerRepository) ?: return@delete
+                    val id = call.parameters["id"]?.let(::runCatchingUuid)
+                    if (id == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de atividade inválido."))
+                        return@delete
+                    }
+                    when (activitiesRepository.delete(id)) {
+                        ActivityDeletion.DELETED -> call.respond(HttpStatusCode.NoContent)
+                        ActivityDeletion.NOT_FOUND ->
+                            call.respond(HttpStatusCode.NotFound, ErrorResponse("Atividade não encontrada."))
+                        ActivityDeletion.IN_USE -> call.respond(
+                            HttpStatusCode.Conflict,
+                            ErrorResponse("A atividade está mapeada em operações de um log e não pode ser excluída."),
+                        )
+                    }
+                }
             }
 
             get("/operations") {
@@ -473,7 +498,7 @@ fun Application.configureRouting() {
                     if (item == null) call.respond(HttpStatusCode.NotFound, ErrorResponse("Equipamento não encontrado.")) else call.respond(item)
                 }
                 delete("/{id}") {
-                    call.requireSupabaseUser(authClient) ?: return@delete
+                    call.requireDeleter(authClient, managerRepository) ?: return@delete
                     val id = call.parameters["id"]?.let(::runCatchingUuid)
                     if (id == null || !maintenanceRepository.deleteEquipment(id)) call.respond(HttpStatusCode.NotFound, ErrorResponse("Equipamento não encontrado."))
                     else call.respond(HttpStatusCode.NoContent)
@@ -664,7 +689,7 @@ fun Application.configureRouting() {
                         predictionSource = prediction?.provenance?.source ?: predictionUnavailable,
                     )
                     val stored = maintenanceRepository.saveAnalysis(
-                        equipmentId, series.monitoringId, parameterId, detection.method, detection.delta, detection.treatment,
+                        equipmentId, series.monitoringId, parameterId, null, detection.method, detection.delta, detection.treatment,
                         detection.observationCount, hash, routeJson.encodeToString(detection), routeJson.encodeToString(provenance),
                         prediction?.rulTraces, "traces", prediction?.failureProbability,
                         prediction?.failureHorizonTraces?.toDouble(), prediction?.let { "traces" },
@@ -674,7 +699,7 @@ fun Application.configureRouting() {
                         maintenanceRepository.createRecommendation(manager.id, equipmentId, stored.id, RecommendationRequest(recommendation))
                     }
                     call.respond(HttpStatusCode.Created, EquipmentAnalysisResponse(
-                        stored.id.toString(), equipmentId.toString(), series.monitoringId.toString(), parameterId.toString(), hash,
+                        stored.id.toString(), equipmentId.toString(), series.monitoringId.toString(), parameterId.toString(), null, hash,
                         detection, provenance, prediction?.rulTraces, "traces", prediction?.failureProbability,
                         prediction?.failureHorizonTraces?.toDouble(), prediction?.let { "traces" },
                         prediction?.provenance?.modelVersion, recommendation, stored.createdAt.toString(),
@@ -751,7 +776,7 @@ fun Application.configureRouting() {
                 get {
                     call.requireSupabaseUser(authClient) ?: return@get; val id=call.parameters["id"]?.let(::runCatchingUuid); val stored=id?.let(maintenanceRepository::findAnalysis)
                     if(stored==null) { call.respond(HttpStatusCode.NotFound,ErrorResponse("Análise não encontrada.")); return@get }
-                    call.respond(EquipmentAnalysisResponse(stored.id.toString(),stored.equipmentId.toString(),stored.monitoringId.toString(),stored.parameterId.toString(),stored.inputSha256,routeJson.decodeFromString(stored.resultJson),routeJson.decodeFromString(stored.provenanceJson),stored.rulValue,stored.rulUnit,stored.failureProbability,stored.failureHorizonValue,stored.failureHorizonUnit,stored.modelVersion,stored.recommendation,stored.createdAt.toString()))
+                    call.respond(EquipmentAnalysisResponse(stored.id.toString(),stored.equipmentId.toString(),stored.monitoringId.toString(),stored.parameterId.toString(),stored.monitoringAnalysisId?.toString(),stored.inputSha256,routeJson.decodeFromString(stored.resultJson),routeJson.decodeFromString(stored.provenanceJson),stored.rulValue,stored.rulUnit,stored.failureProbability,stored.failureHorizonValue,stored.failureHorizonUnit,stored.modelVersion,stored.recommendation,stored.createdAt.toString()))
                 }
                 post("/recommendations") {
                     val u=call.requireSupabaseUser(authClient)?:return@post; val m=managerRepository.findOrCreateForSupabaseUser(u.id,u.email,u.fullNameHint); val id=call.parameters["id"]?.let(::runCatchingUuid); val stored=id?.let(maintenanceRepository::findAnalysis); val body=call.receive<RecommendationRequest>()
@@ -773,8 +798,20 @@ fun Application.configureRouting() {
                     if(body.title.isBlank()||start==null||(body.scheduledEnd!=null&&end==null)||(end!=null&&end<start)) { call.respond(HttpStatusCode.BadRequest,ErrorResponse("Agenda de manutenção inválida.")); return@post }
                     val item=runCatching{maintenanceRepository.createSchedule(m.id,body)}.getOrNull(); if(item==null) call.respond(HttpStatusCode.UnprocessableEntity,ErrorResponse("Referências da agenda inválidas.")) else call.respond(HttpStatusCode.Created,item)
                 }
-                put("/{id}") { call.requireSupabaseUser(authClient)?:return@put; val id=call.parameters["id"]?.let(::runCatchingUuid); val body=call.receive<MaintenanceScheduleRequest>(); val item=runCatching{id?.let{maintenanceRepository.updateSchedule(it,body)}}.getOrNull(); if(item==null) call.respond(HttpStatusCode.BadRequest,ErrorResponse("Agenda inválida ou não encontrada.")) else call.respond(item) }
-                delete("/{id}") { call.requireSupabaseUser(authClient)?:return@delete; val id=call.parameters["id"]?.let(::runCatchingUuid); if(id==null||!maintenanceRepository.deleteSchedule(id)) call.respond(HttpStatusCode.NotFound,ErrorResponse("Agenda não encontrada.")) else call.respond(HttpStatusCode.NoContent) }
+                put("/{id}") {
+                    call.requireSupabaseUser(authClient) ?: return@put
+                    val id = call.parameters["id"]?.let(::runCatchingUuid)
+                    val body = call.receive<MaintenanceScheduleRequest>()
+                    val start = runCatching { OffsetDateTime.parse(body.scheduledStart) }.getOrNull()
+                    val end = body.scheduledEnd?.let { runCatching { OffsetDateTime.parse(it) }.getOrNull() }
+                    if (id == null || body.title.isBlank() || start == null || (body.scheduledEnd != null && end == null) || (end != null && end < start)) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("Agenda de manutenção inválida."))
+                        return@put
+                    }
+                    val item = runCatching { maintenanceRepository.updateSchedule(id, body) }.getOrNull()
+                    if (item == null) call.respond(HttpStatusCode.NotFound, ErrorResponse("Agenda não encontrada.")) else call.respond(item)
+                }
+                delete("/{id}") { call.requireDeleter(authClient, managerRepository)?:return@delete; val id=call.parameters["id"]?.let(::runCatchingUuid); if(id==null||!maintenanceRepository.deleteSchedule(id)) call.respond(HttpStatusCode.NotFound,ErrorResponse("Agenda não encontrada.")) else call.respond(HttpStatusCode.NoContent) }
             }
 
             /**
@@ -1206,7 +1243,7 @@ fun Application.configureRouting() {
                 }
 
                 delete("/{id}") {
-                    call.requireSupabaseUser(authClient) ?: return@delete
+                    call.requireDeleter(authClient, managerRepository) ?: return@delete
                     val id = call.parameters["id"]?.let(::runCatchingUuid)
                     if (id == null) {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de análise inválido."))

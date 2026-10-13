@@ -12,11 +12,14 @@ from __future__ import annotations
 
 from typing import Literal
 
+import pandas as pd
+
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from .ipdd_adwin import TREATMENT_TREATED, detect_performance_drifts
+from .analysis_engine import AnalysisEngine
+from .ipdd_adwin import TREATMENT_TREATED
 from .maintenance_prediction import (
     FAILURE_HORIZON_TRACES,
     RUL_WINDOW_TRACES,
@@ -132,7 +135,9 @@ def detect(request: DetectRequest) -> DetectResponse:
     ``treated`` for the shop-floor one (``adwin_real_dataset.py``).
     """
     try:
-        result = detect_performance_drifts(
+        # Singleton + Adapter: o endpoint só conhece o motor e a interface
+        # DriftDetector; o código da pesquisa fica atrás do IpddAdwinAdapter.
+        result = AnalysisEngine.get_instance().run(
             request.values,
             delta=request.delta,
             treatment=request.treatment,
@@ -141,23 +146,14 @@ def detect(request: DetectRequest) -> DetectResponse:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
     return DetectResponse(
-        method="IPDD + ADWIN",
+        method=result.method,
         delta=request.delta,
         treatment=result.treatment,
         observation_count=len(request.values),
         smoothing_window=result.smoothing_window,
         processed_values=result.processed_values,
         outlier_indices=result.outlier_indices,
-        drifts=[
-            DriftPoint(
-                index=drift.detection_index,
-                anomaly_start_index=drift.anomaly_start_index,
-                value=drift.value,
-                width=drift.width,
-                estimation=drift.estimation,
-            )
-            for drift in result.drifts
-        ],
+        drifts=[DriftPoint(**vars(drift)) for drift in result.drifts],
     )
 
 
@@ -220,6 +216,7 @@ async def parse(file: UploadFile = File(...)) -> JSONResponse:
     """
     # PM4Py is intentionally imported only for parsing. Prediction and health
     # requests should not pay its substantial import/startup cost.
+    from .graph_miner import Pm4pyGraphAdapter
     from .parser import ParseError, parse_log
 
     content = await file.read()
@@ -236,6 +233,9 @@ async def parse(file: UploadFile = File(...)) -> JSONResponse:
         result = parse_log(content, file.filename or "")
     except ParseError as err:
         raise HTTPException(status_code=422, detail=str(err)) from err
+
+    # Adapter: o grafo vem do pm4py, mas o endpoint só conhece GraphMiner.
+    graph = Pm4pyGraphAdapter().mine(_event_frame(result.traces))
 
     return JSONResponse(
         {
@@ -272,8 +272,27 @@ async def parse(file: UploadFile = File(...)) -> JSONResponse:
                 }
                 for trace in result.traces
             ],
+            "graph": {"nodes": graph.nodes, "edges": graph.edges},
         }
     )
+
+
+def _event_frame(traces) -> pd.DataFrame:
+    """Eventos já ordenados pelo parser, nas colunas que o GraphMiner espera.
+    Sem timestamp, usa a posição na trace para preservar a ordem."""
+    rows = [
+        {
+            "case_id": trace.case_id,
+            "raw_label": event.raw_label,
+            "occurred_at": event.occurred_at
+            or pd.Timestamp(0, tz="UTC") + pd.Timedelta(seconds=event.sequence_index),
+        }
+        for trace in traces
+        for event in trace.events
+    ]
+    frame = pd.DataFrame(rows, columns=["case_id", "raw_label", "occurred_at"])
+    frame["occurred_at"] = pd.to_datetime(frame["occurred_at"], utc=True)
+    return frame
 
 
 def _iso(value) -> str | None:
