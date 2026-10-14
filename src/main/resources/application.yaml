@@ -35,15 +35,15 @@ productLine:
     - name: "Deviante"
       plan: manutencao
       exclusive: [schedule-export]
-    - name: "Metalúrgica Alfa"
+    - name: "Alfa"
       plan: manutencao
       exclusive: [schedule-export]
-    - name: "Metalúrgica Beta"
+    - name: "Beta"
       plan: essencial
       exclusive: []
-    - name: "Metalúrgica Gama"
+    - name: "Gama"
       plan: manutencao
       exclusive: []
-    - name: "Metalúrgica Delta"
+    - name: "Delta"
       plan: essencial
       exclusive: []

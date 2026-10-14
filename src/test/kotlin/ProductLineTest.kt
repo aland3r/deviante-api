@@ -24,15 +24,15 @@ class ProductLineTest {
 
     @Test
     fun `each company receives its own variant`() {
-        val alfa = productLine.variantOrDefault("Metalúrgica Alfa")
+        val alfa = productLine.variantOrDefault("Alfa")
         val beta = productLine.variantOrDefault("metalúrgica beta ")
-        val gama = productLine.variantOrDefault("Metalúrgica Gama")
-        val delta = productLine.variantOrDefault("Metalúrgica Delta")
+        val gama = productLine.variantOrDefault("Gama")
+        val delta = productLine.variantOrDefault("Delta")
 
         assertEquals(Plan.MANUTENCAO, alfa.plan)
         assertTrue(alfa.has(Feature.SCHEDULE_EXPORT))
 
-        assertEquals("Metalúrgica Beta", beta.client)
+        assertEquals("Beta", beta.client)
         assertEquals(Plan.ESSENCIAL, beta.plan)
         assertFalse(beta.has(Feature.EQUIPMENT))
         assertFalse(beta.has(Feature.SCHEDULES))
@@ -53,7 +53,7 @@ class ProductLineTest {
     @Test
     fun `the four demo companies and Deviante are configured`() {
         assertEquals(
-            listOf("Deviante", "Metalúrgica Alfa", "Metalúrgica Beta", "Metalúrgica Gama", "Metalúrgica Delta"),
+            listOf("Deviante", "Alfa", "Beta", "Gama", "Delta"),
             productLine.variants.map { it.client },
         )
         assertEquals(null, productLine.variantForClient("Empresa inexistente"))
