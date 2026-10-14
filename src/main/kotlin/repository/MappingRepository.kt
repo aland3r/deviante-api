@@ -28,8 +28,16 @@ import java.util.UUID
  * the point of UC3 (different outsourced logs spelling one physical step
  * differently), so activities are matched by name, case-insensitively, and
  * reused rather than duplicated.
+ *
+ * Each company has its own catalog. Only roles that keep the catalog
+ * (administrator, owner) may create an activity while mapping; a manager
+ * maps to activities that already exist.
  */
 class MappingRepository {
+
+    /** Names the manager typed that are not in the company's catalog. */
+    class UnknownActivitiesException(val names: List<String>) :
+        RuntimeException("Atividade fora do catálogo da empresa: ${names.joinToString(", ")}.")
 
     data class Resolution(
         val operationId: UUID,
@@ -42,20 +50,29 @@ class MappingRepository {
         val activities: List<ActivityRecord>,
     )
 
-    fun resolveAll(processId: UUID, resolutions: List<Resolution>): Result = transaction {
+    fun resolveAll(
+        processId: UUID,
+        resolutions: List<Resolution>,
+        businessId: UUID,
+        allowCreate: Boolean,
+    ): Result = transaction {
         val now = OffsetDateTime.now()
         val activitiesByKey = mutableMapOf<String, ActivityRecord>()
+
+        val unknown = resolutions.map { it.activityName.trim() }.distinctBy { it.lowercase() }
+            .filter { findActivityByName(it, businessId) == null }
+        if (unknown.isNotEmpty() && !allowCreate) throw UnknownActivitiesException(unknown)
 
         for (resolution in resolutions) {
             val name = resolution.activityName.trim()
             val key = name.lowercase()
             if (activitiesByKey.containsKey(key)) continue
 
-            activitiesByKey[key] = findActivityByName(name)
-                ?: createActivity(name, resolution.activityDescription.trim(), now)
+            activitiesByKey[key] = findActivityByName(name, businessId)
+                ?: createActivity(name, resolution.activityDescription.trim(), businessId, now)
         }
 
-        // The catalog is global; `process_activities` is what makes an
+        // The catalog belongs to the company; `process_activities` is what makes an
         // activity part of *this* process (many-to-many, owner's correction).
         for (activity in activitiesByKey.values) {
             linkIfAbsent(processId, activity.id, now)
@@ -83,18 +100,19 @@ class MappingRepository {
         Result(operations = mapped, activities = activitiesByKey.values.toList())
     }
 
-    private fun findActivityByName(name: String): ActivityRecord? =
+    private fun findActivityByName(name: String, businessId: UUID): ActivityRecord? =
         ActivitiesTable
             .selectAll()
-            .where { ActivitiesTable.name.lowerCase() eq name.lowercase() }
+            .where { (ActivitiesTable.businessId eq businessId) and (ActivitiesTable.name.lowerCase() eq name.lowercase()) }
             .limit(1)
             .firstOrNull()
             ?.toActivityRecord()
 
-    private fun createActivity(name: String, description: String, now: OffsetDateTime): ActivityRecord {
+    private fun createActivity(name: String, description: String, businessId: UUID, now: OffsetDateTime): ActivityRecord {
         val id = UUID.randomUUID()
         ActivitiesTable.insert {
             it[ActivitiesTable.id] = id
+            it[ActivitiesTable.businessId] = businessId
             it[ActivitiesTable.name] = name.take(150)
             it[ActivitiesTable.description] = description
             it[ActivitiesTable.createdAt] = now
@@ -106,6 +124,7 @@ class MappingRepository {
             description = description,
             createdAt = now,
             updatedAt = now,
+            businessId = businessId,
         )
     }
 

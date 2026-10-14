@@ -7,6 +7,8 @@ object ActivitiesTable : Table(name = "activities") {
     override val tableName = "deviante.activities"
 
     val id = uuid("id")
+    // cada empresa tem o próprio catálogo de atividades
+    val businessId = uuid("business_id").references(BusinessesTable.id)
     val name = varchar("name", 150)
     val description = text("description")
     val createdAt = timestampWithTimeZone("created_at")

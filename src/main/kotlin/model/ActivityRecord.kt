@@ -9,4 +9,5 @@ data class ActivityRecord(
     val description: String,
     val createdAt: OffsetDateTime,
     val updatedAt: OffsetDateTime,
+    val businessId: UUID? = null,
 )

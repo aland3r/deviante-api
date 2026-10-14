@@ -18,8 +18,12 @@ data class ManagerRecord(
     /** Excluir registros é permitido só ao administrador (owner ou admin) e ao gestor. */
     fun canDelete(): Boolean = role in DELETE_ROLES
 
+    /** Catálogo de atividades e tela de Operações: só o administrador (owner ou admin). */
+    fun keepsCatalog(): Boolean = role in CATALOG_ROLES
+
     companion object {
         val DELETE_ROLES = setOf("owner", "admin", "manager")
+        val CATALOG_ROLES = setOf("owner", "admin")
     }
 }
 

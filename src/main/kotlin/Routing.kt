@@ -228,6 +228,23 @@ private suspend fun ApplicationCall.requireDeleter(
     return manager
 }
 
+/**
+ * O catálogo de atividades e as operações são do administrador da empresa;
+ * gestor, operador, técnico e mentor recebem 403.
+ */
+private suspend fun ApplicationCall.requireCatalogKeeper(
+    authClient: SupabaseAuthClient,
+    managerRepository: ManagerRepository,
+): ManagerRecord? {
+    val user = requireSupabaseUser(authClient) ?: return null
+    val manager = managerRepository.findOrCreateForSupabaseUser(user.id, user.email, user.fullNameHint)
+    if (!manager.keepsCatalog()) {
+        respond(HttpStatusCode.Forbidden, ErrorResponse("Somente o administrador mantém o catálogo de atividades."))
+        return null
+    }
+    return manager
+}
+
 fun Application.configureRouting() {
     val authClient = configureSupabaseAuthClient()
     val managerRepository = ManagerRepository()
@@ -449,22 +466,18 @@ fun Application.configureRouting() {
             route("/activities") {
                 get {
                     val supabaseUser = call.requireSupabaseUser(authClient) ?: return@get
-                    managerRepository.findOrCreateForSupabaseUser(
+                    val manager = managerRepository.findOrCreateForSupabaseUser(
                         supabaseUser.id,
                         supabaseUser.email,
                         supabaseUser.fullNameHint,
                     )
-                    val activities = activitiesRepository.listAll().map { it.toResponse() }
+                    // Catálogo da empresa escolhida, também para o administrador.
+                    val activities = activitiesRepository.listAll(call.companyScope(manager).businessId).map { it.toResponse() }
                     call.respond(activities)
                 }
 
                 post {
-                    val supabaseUser = call.requireSupabaseUser(authClient) ?: return@post
-                    managerRepository.findOrCreateForSupabaseUser(
-                        supabaseUser.id,
-                        supabaseUser.email,
-                        supabaseUser.fullNameHint,
-                    )
+                    val manager = call.requireCatalogKeeper(authClient, managerRepository) ?: return@post
                     val body = call.receive<CreateActivityRequest>()
 
                     val fieldErrors = mutableMapOf<String, String>()
@@ -477,13 +490,14 @@ fun Application.configureRouting() {
                     val activity = activitiesRepository.create(
                         name = body.name.trim(),
                         description = body.description.trim(),
+                        businessId = call.companyScope(manager).businessId,
                     )
                     call.respond(HttpStatusCode.Created, activity.toResponse())
                 }
 
                 get("/{id}") {
                     val supabaseUser = call.requireSupabaseUser(authClient) ?: return@get
-                    managerRepository.findOrCreateForSupabaseUser(
+                    val manager = managerRepository.findOrCreateForSupabaseUser(
                         supabaseUser.id,
                         supabaseUser.email,
                         supabaseUser.fullNameHint,
@@ -494,6 +508,7 @@ fun Application.configureRouting() {
                         return@get
                     }
                     val activity = activitiesRepository.findById(id)
+                        ?.takeIf { it.businessId == call.companyScope(manager).businessId }
                     if (activity == null) {
                         call.respond(HttpStatusCode.NotFound, ErrorResponse("Atividade não encontrada."))
                         return@get
@@ -502,13 +517,9 @@ fun Application.configureRouting() {
                 }
 
                 put("/{id}") {
-                    val supabaseUser = call.requireSupabaseUser(authClient) ?: return@put
-                    managerRepository.findOrCreateForSupabaseUser(
-                        supabaseUser.id,
-                        supabaseUser.email,
-                        supabaseUser.fullNameHint,
-                    )
+                    val manager = call.requireCatalogKeeper(authClient, managerRepository) ?: return@put
                     val id = call.parameters["id"]?.let(::runCatchingUuid)
+                        ?.takeIf { activitiesRepository.findById(it)?.businessId == call.companyScope(manager).businessId }
                     if (id == null) {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de atividade inválido."))
                         return@put
@@ -535,8 +546,9 @@ fun Application.configureRouting() {
                 }
 
                 delete("/{id}") {
-                    call.requireDeleter(authClient, managerRepository) ?: return@delete
+                    val manager = call.requireCatalogKeeper(authClient, managerRepository) ?: return@delete
                     val id = call.parameters["id"]?.let(::runCatchingUuid)
+                        ?.takeIf { activitiesRepository.findById(it)?.businessId == call.companyScope(manager).businessId }
                     if (id == null) {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de atividade inválido."))
                         return@delete
@@ -554,8 +566,7 @@ fun Application.configureRouting() {
             }
 
             get("/operations") {
-                val user = call.requireSupabaseUser(authClient) ?: return@get
-                val manager = managerRepository.findOrCreateForSupabaseUser(user.id, user.email, user.fullNameHint)
+                val manager = call.requireCatalogKeeper(authClient, managerRepository) ?: return@get
                 call.respond(
                     operationsRepository.listCatalogForManager(manager.id).map { catalog ->
                         catalog.operation.toResponse(
@@ -958,11 +969,12 @@ fun Application.configureRouting() {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de atividade inválido."))
                         return@put
                     }
-                    if (call.requireProcess(authClient, managerRepository, processRepository, processId) == null) {
-                        return@put
-                    }
+                    val process = call.requireProcess(authClient, managerRepository, processRepository, processId)
+                        ?: return@put
 
+                    // Só vincula atividade do catálogo da empresa dona do processo.
                     val activity = activitiesRepository.findById(activityId)
+                        ?.takeIf { it.businessId == process.businessId }
                     if (activity == null) {
                         call.respond(HttpStatusCode.NotFound, ErrorResponse("Atividade não encontrada."))
                         return@put
@@ -1000,11 +1012,10 @@ fun Application.configureRouting() {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
                         return@get
                     }
-                    if (call.requireProcess(authClient, managerRepository, processRepository, processId) == null) {
-                        return@get
-                    }
+                    val process = call.requireProcess(authClient, managerRepository, processRepository, processId)
+                        ?: return@get
 
-                    val activityNames = activitiesRepository.listAll().associate { it.id to it.name }
+                    val activityNames = activitiesRepository.listAll(process.businessId).associate { it.id to it.name }
                     val operations = eventLogsRepository.findByProcessId(processId)
                         .flatMap { operationsRepository.listForEventLog(it.id) }
                         .map { it.toResponse(activityNames[it.activityId]) }
@@ -1569,9 +1580,10 @@ fun Application.configureRouting() {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
                         return@post
                     }
-                    if (call.requireProcess(authClient, managerRepository, processRepository, processId) == null) {
-                        return@post
-                    }
+                    val process = call.requireProcess(authClient, managerRepository, processRepository, processId)
+                        ?: return@post
+                    val user = call.requireSupabaseUser(authClient) ?: return@post
+                    val manager = managerRepository.findOrCreateForSupabaseUser(user.id, user.email, user.fullNameHint)
 
                     val body = call.receive<ResolveMappingRequest>()
                     if (body.mappings.isEmpty()) {
@@ -1601,7 +1613,14 @@ fun Application.configureRouting() {
                         return@post
                     }
 
-                    val result = mappingRepository.resolveAll(processId, resolutions)
+                    // O gestor só mapeia para atividades que já existem no catálogo;
+                    // criar atividade nova é do administrador.
+                    val result = try {
+                        mappingRepository.resolveAll(processId, resolutions, process.businessId, manager.keepsCatalog())
+                    } catch (e: MappingRepository.UnknownActivitiesException) {
+                        call.respond(HttpStatusCode.UnprocessableEntity, ErrorResponse(e.message ?: "Atividade fora do catálogo."))
+                        return@post
+                    }
                     val activityNames = result.activities.associate { it.id to it.name }
 
                     call.respond(
@@ -1616,6 +1635,7 @@ fun Application.configureRouting() {
 
             route("/operations/{id}/map") {
                 post {
+                    call.requireCatalogKeeper(authClient, managerRepository) ?: return@post
                     val id = call.parameters["id"]?.let(::runCatchingUuid)
                     if (id == null) {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de operação inválido."))
@@ -1640,6 +1660,7 @@ fun Application.configureRouting() {
 
             route("/operations/{id}/unmap") {
                 post {
+                    call.requireCatalogKeeper(authClient, managerRepository) ?: return@post
                     val id = call.parameters["id"]?.let(::runCatchingUuid)
                     if (id == null) {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de operação inválido."))

@@ -21,9 +21,11 @@ import java.util.UUID
 enum class ActivityDeletion { DELETED, NOT_FOUND, IN_USE }
 
 class ActivitiesRepository {
-    fun listAll(): List<ActivityRecord> = transaction {
+    /** Catálogo de atividades de uma empresa. */
+    fun listAll(businessId: UUID): List<ActivityRecord> = transaction {
         ActivitiesTable
             .selectAll()
+            .where { ActivitiesTable.businessId eq businessId }
             .orderBy(ActivitiesTable.name, SortOrder.ASC)
             .map { it.toActivityRecord() }
     }
@@ -46,12 +48,13 @@ class ActivitiesRepository {
             ?.toActivityRecord()
     }
 
-    fun create(name: String, description: String): ActivityRecord = transaction {
+    fun create(name: String, description: String, businessId: UUID): ActivityRecord = transaction {
         val now = OffsetDateTime.now()
         val id = UUID.randomUUID()
 
         ActivitiesTable.insert {
             it[ActivitiesTable.id] = id
+            it[ActivitiesTable.businessId] = businessId
             it[ActivitiesTable.name] = name
             it[ActivitiesTable.description] = description
             it[ActivitiesTable.createdAt] = now
@@ -64,6 +67,7 @@ class ActivitiesRepository {
             description = description,
             createdAt = now,
             updatedAt = now,
+            businessId = businessId,
         )
     }
 
@@ -112,5 +116,6 @@ class ActivitiesRepository {
         description = this[ActivitiesTable.description],
         createdAt = this[ActivitiesTable.createdAt],
         updatedAt = this[ActivitiesTable.updatedAt],
+        businessId = this[ActivitiesTable.businessId],
     )
 }

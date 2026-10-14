@@ -68,7 +68,7 @@ object SeedDemoData {
      * forever with zero operations and zero traces, and the graph would have
      * nothing to draw from it.
      *
-     * Activities are not seeded either. The catalog is global (UC3) and the
+     * Activities are not seeded either. The catalog is per company (UC3) and the
      * mapping step creates entries from the labels a real log actually
      * contains; pre-filling it with unrelated names risks
      * `MappingRepository.resolveAll` silently binding an uploaded event to a

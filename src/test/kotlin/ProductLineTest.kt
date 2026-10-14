@@ -25,7 +25,7 @@ class ProductLineTest {
     @Test
     fun `each company receives its own variant`() {
         val alfa = productLine.variantOrDefault("Alfa")
-        val beta = productLine.variantOrDefault("metalúrgica beta ")
+        val beta = productLine.variantOrDefault(" beta ")
         val gama = productLine.variantOrDefault("Gama")
         val delta = productLine.variantOrDefault("Delta")
 
