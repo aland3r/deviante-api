@@ -1025,6 +1025,48 @@ fun Application.configureRouting() {
             }
 
             /**
+             * Operations CRUD inside a process, for every role that sees it.
+             * Map (create/update) only to an activity of the process's own
+             * company catalog; unmap (delete) clears the link. The catalog
+             * itself stays with the administrator.
+             */
+            route("/processes/{processId}/operations/{id}") {
+                suspend fun ApplicationCall.processOperation(): Pair<ProcessRecord, UUID>? {
+                    val processId = parameters["processId"]?.let(::runCatchingUuid)
+                    val id = parameters["id"]?.let(::runCatchingUuid)
+                    if (processId == null || id == null) {
+                        respond(HttpStatusCode.BadRequest, ErrorResponse("ID inválido."))
+                        return null
+                    }
+                    val process = requireProcess(authClient, managerRepository, processRepository, processId) ?: return null
+                    val logIds = eventLogsRepository.findByProcessId(processId).map { it.id }.toSet()
+                    if (operationsRepository.findById(id)?.eventLogId !in logIds) {
+                        respond(HttpStatusCode.NotFound, ErrorResponse("Operação não encontrada."))
+                        return null
+                    }
+                    return process to id
+                }
+
+                put("/activity") {
+                    val (process, id) = call.processOperation() ?: return@put
+                    val body = call.receive<MapOperationRequest>()
+                    val activity = runCatchingUuid(body.activityId)?.let(activitiesRepository::findById)
+                        ?.takeIf { it.businessId == process.businessId }
+                    if (activity == null) {
+                        call.respond(HttpStatusCode.UnprocessableEntity, ErrorResponse("Atividade fora do catálogo da empresa."))
+                        return@put
+                    }
+                    val updated = operationsRepository.mapToActivity(id, activity.id)!!
+                    call.respond(updated.toResponse(activity.name))
+                }
+
+                delete("/activity") {
+                    val (_, id) = call.processOperation() ?: return@delete
+                    call.respond(operationsRepository.unmap(id)!!.toResponse())
+                }
+            }
+
+            /**
              * UC7 — the process graph, derived from the latest parsed event log
              * of this process. Empty (not an error) while no log was ingested:
              * "nothing uploaded yet" is a state the canvas draws.
