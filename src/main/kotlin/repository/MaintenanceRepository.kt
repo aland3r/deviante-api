@@ -19,6 +19,8 @@ data class ReadingSeries(
     val lastObservedAt: OffsetDateTime?,
 )
 
+data class ScheduleOwner(val businessId: UUID?)
+
 data class PredictiveSignalRow(
     val machineOperating: Double,
     val rawMaterialLoading: Double,
@@ -378,6 +380,33 @@ class MaintenanceRepository {
             it[MaintenanceSchedulesTable.recommendationId] = body.recommendationId?.let(UUID::fromString); it[MaintenanceSchedulesTable.title] = body.title.trim(); it[MaintenanceSchedulesTable.notes] = body.notes.trim()
             it[MaintenanceSchedulesTable.scheduledStart] = OffsetDateTime.parse(body.scheduledStart); it[MaintenanceSchedulesTable.scheduledEnd] = body.scheduledEnd?.let(OffsetDateTime::parse)
             it[MaintenanceSchedulesTable.status] = body.status; it[MaintenanceSchedulesTable.updatedAt] = OffsetDateTime.now()
+        }
+        if (changed == 0) null else findSchedule(id)
+    }
+
+    /** Empresa dona da máquina; null quando ela não existe. */
+    fun equipmentBusinessId(id: UUID): UUID? = transaction {
+        EquipmentTable.selectAll().where { EquipmentTable.id eq id }.firstOrNull()?.get(EquipmentTable.businessId)
+    }
+
+    /** Empresa da agenda (pode ser nula no banco); null externo quando a agenda não existe. */
+    fun scheduleBusiness(id: UUID): ScheduleOwner? = transaction {
+        MaintenanceSchedulesTable.selectAll().where { MaintenanceSchedulesTable.id eq id }.firstOrNull()
+            ?.let { ScheduleOwner(it[MaintenanceSchedulesTable.businessId]) }
+    }
+
+    /** Há agenda de manutenção das empresas visíveis apontando para o processo? */
+    fun hasScheduleForProcess(processId: UUID, businessIds: Set<UUID>?): Boolean = transaction {
+        val query = MaintenanceSchedulesTable.selectAll().where { MaintenanceSchedulesTable.processId eq processId }
+        if (businessIds != null) query.andWhere { MaintenanceSchedulesTable.businessId inList businessIds }
+        query.limit(1).any()
+    }
+
+    fun updateScheduleStatus(id: UUID, status: String, notes: String?): MaintenanceScheduleResponse? = transaction {
+        val changed = MaintenanceSchedulesTable.update({ MaintenanceSchedulesTable.id eq id }) {
+            it[MaintenanceSchedulesTable.status] = status
+            if (notes != null) it[MaintenanceSchedulesTable.notes] = notes.trim()
+            it[MaintenanceSchedulesTable.updatedAt] = OffsetDateTime.now()
         }
         if (changed == 0) null else findSchedule(id)
     }

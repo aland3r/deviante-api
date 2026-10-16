@@ -21,9 +21,22 @@ data class ManagerRecord(
     /** Catálogo de atividades e tela de Operações: só o administrador (owner ou admin). */
     fun keepsCatalog(): Boolean = role in CATALOG_ROLES
 
+    /** Criar e alterar processos, máquinas, agendas e monitoramentos: administrador e gestor. */
+    fun canEdit(): Boolean = role in EDIT_ROLES
+
+    /** Anotar traces do processo: quem edita e o operador. */
+    fun writesTraceNotes(): Boolean = role in NOTE_ROLES
+
+    fun isTechnician(): Boolean = role == "technician"
+
     companion object {
         val DELETE_ROLES = setOf("owner", "admin", "manager")
         val CATALOG_ROLES = setOf("owner", "admin")
+        val EDIT_ROLES = setOf("owner", "admin", "manager")
+        val NOTE_ROLES = EDIT_ROLES + "operator"
+
+        /** Papéis dos quais um processo ou máquina pode ser ocultado. */
+        val HIDEABLE_ROLES = setOf("operator", "technician")
     }
 }
 

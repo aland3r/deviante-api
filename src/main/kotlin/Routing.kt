@@ -33,6 +33,13 @@ import com.deviante.dto.UnmappedOperationResponse
 import com.deviante.dto.UpdateActivityRequest
 import com.deviante.dto.UpdateManagerRequest
 import com.deviante.dto.UpdateProcessRequest
+import com.deviante.dto.CreateTraceNoteRequest
+import com.deviante.dto.SCHEDULE_STATUSES
+import com.deviante.dto.ScheduleStatusRequest
+import com.deviante.dto.VISIBILITY_OBJECT_TYPES
+import com.deviante.dto.VisibilityRequest
+import com.deviante.dto.VisibilityResponse
+import com.deviante.dto.traceNoteError
 import com.deviante.dto.validateProcessDeletion
 import com.deviante.dto.toResponse
 import com.deviante.dto.toSummaryResponse
@@ -53,6 +60,8 @@ import com.deviante.repository.MaintenanceRepository
 import com.deviante.repository.OperationsRepository
 import com.deviante.repository.ProcessGraphRepository
 import com.deviante.repository.ProcessRepository
+import com.deviante.repository.TraceNotesRepository
+import com.deviante.repository.VisibilityRepository
 import io.ktor.http.*
 import io.ktor.http.content.*
 import io.ktor.server.application.*
@@ -69,31 +78,63 @@ import java.security.MessageDigest
 import java.time.OffsetDateTime
 import java.util.UUID
 
+internal val visibilityRepository = VisibilityRepository()
+internal val scheduleLookup = MaintenanceRepository()
+
+class ProcessAccess(val process: ProcessRecord, val manager: ManagerRecord)
+
+/**
+ * Pode o usuário ver o processo? Empresa no escopo; o técnico só vê processo
+ * com agenda de manutenção da sua empresa; operador e técnico não veem o que
+ * foi ocultado para o seu papel (falha na tabela de ocultação = nada oculto).
+ */
+internal fun ApplicationCall.canSeeProcess(manager: ManagerRecord, process: ProcessRecord): Boolean {
+    val scope = companyScope(manager)
+    if (!scope.sees(process.businessId)) return false
+    if (manager.isTechnician() && !scheduleLookup.hasScheduleForProcess(process.id, scope.visibleBusinesses)) return false
+    if (manager.role in ManagerRecord.HIDEABLE_ROLES && visibilityRepository.isHiddenSafe("process", process.id, manager.role)) return false
+    return true
+}
+
 /**
  * Authenticates, resolves the Manager, and checks the process is visible to
  * them — the same four-step preamble every process-scoped route needs.
+ * With [edit], also requires a role that may change it (403 otherwise).
  * Responds with the right status itself and returns null when it fails.
  */
-private suspend fun ApplicationCall.requireProcess(
+private suspend fun ApplicationCall.requireProcessAccess(
     authClient: SupabaseAuthClient,
     managerRepository: ManagerRepository,
     processRepository: ProcessRepository,
     processId: UUID,
-): ProcessRecord? {
+    edit: Boolean = false,
+): ProcessAccess? {
     val supabaseUser = requireSupabaseUser(authClient) ?: return null
     val manager = managerRepository.findOrCreateForSupabaseUser(
         supabaseUser.id,
         supabaseUser.email,
         supabaseUser.fullNameHint,
     )
+    if (edit && !manager.canEdit()) {
+        respond(HttpStatusCode.Forbidden, ErrorResponse(EDIT_FORBIDDEN))
+        return null
+    }
     val process = processRepository.findById(processId)
-        ?.takeIf { companyScope(manager).sees(it.businessId) }
+        ?.takeIf { canSeeProcess(manager, it) }
     if (process == null) {
         respond(HttpStatusCode.NotFound, ErrorResponse("Processo não encontrado."))
         return null
     }
-    return process
+    return ProcessAccess(process, manager)
 }
+
+private suspend fun ApplicationCall.requireProcess(
+    authClient: SupabaseAuthClient,
+    managerRepository: ManagerRepository,
+    processRepository: ProcessRepository,
+    processId: UUID,
+    edit: Boolean = false,
+): ProcessRecord? = requireProcessAccess(authClient, managerRepository, processRepository, processId, edit)?.process
 
 /** Reads the first file part of a multipart upload, discarding the rest. */
 private suspend fun ApplicationCall.receiveUploadedFile(): Pair<String, ByteArray>? {
@@ -228,6 +269,31 @@ private suspend fun ApplicationCall.requireDeleter(
     return manager
 }
 
+const val EDIT_FORBIDDEN = "Seu papel não permite esta ação."
+
+/**
+ * Criar e alterar (processos, máquinas, agendas, monitoramentos) é do
+ * administrador e do gestor; operador, técnico e mentor recebem 403.
+ */
+private suspend fun ApplicationCall.requireEditor(
+    authClient: SupabaseAuthClient,
+    managerRepository: ManagerRepository,
+): ManagerRecord? {
+    val user = requireSupabaseUser(authClient) ?: return null
+    val manager = managerRepository.findOrCreateForSupabaseUser(user.id, user.email, user.fullNameHint)
+    if (!manager.canEdit()) {
+        respond(HttpStatusCode.Forbidden, ErrorResponse(EDIT_FORBIDDEN))
+        return null
+    }
+    return manager
+}
+
+/** Tabelas novas (trace_notes, object_visibility) podem ainda não existir no banco. */
+private suspend fun ApplicationCall.respondTableMissing(e: Exception) {
+    application.environment.log.warn("Tabela de papéis indisponível: {}", e.message)
+    respond(HttpStatusCode.ServiceUnavailable, ErrorResponse("Tabela ainda não criada."))
+}
+
 /**
  * O catálogo de atividades e as operações são do administrador da empresa;
  * gestor, operador, técnico e mentor recebem 403.
@@ -257,6 +323,7 @@ fun Application.configureRouting() {
     val graphRepository = ProcessGraphRepository()
     val analysisRepository = AnalysisRepository()
     val maintenanceRepository = MaintenanceRepository()
+    val traceNotesRepository = TraceNotesRepository()
     val miningClient = configureMiningClient()
     val routeJson = Json { encodeDefaults = true; ignoreUnknownKeys = true }
 
@@ -314,21 +381,26 @@ fun Application.configureRouting() {
                         supabaseUser.email,
                         supabaseUser.fullNameHint,
                     )
+                    // O técnico chega aos processos só pela agenda de manutenção.
+                    if (manager.isTechnician()) {
+                        call.respond(emptyList<com.deviante.dto.ProcessResponse>())
+                        return@get
+                    }
                     val scope = call.companyScope(manager)
+                    val hidden = if (manager.role in ManagerRecord.HIDEABLE_ROLES) {
+                        visibilityRepository.hiddenIdsSafe("process", manager.role)
+                    } else {
+                        emptySet()
+                    }
                     val labels = businessRepository.namesById()
                     val processes = processRepository.listAll()
-                        .filter { scope.sees(it.businessId) }
+                        .filter { scope.sees(it.businessId) && it.id !in hidden }
                         .map { it.toResponse(company = labels[it.businessId]) }
                     call.respond(processes)
                 }
 
                 post {
-                    val supabaseUser = call.requireSupabaseUser(authClient) ?: return@post
-                    val manager = managerRepository.findOrCreateForSupabaseUser(
-                        supabaseUser.id,
-                        supabaseUser.email,
-                        supabaseUser.fullNameHint,
-                    )
+                    val manager = call.requireEditor(authClient, managerRepository) ?: return@post
                     val process = processRepository.create(manager.id, call.companyScope(manager).businessId)
                     call.respond(HttpStatusCode.Created, process.toResponse())
                 }
@@ -346,7 +418,7 @@ fun Application.configureRouting() {
                         supabaseUser.fullNameHint,
                     )
                     val process = processRepository.findById(id)
-                        ?.takeIf { call.companyScope(manager).sees(it.businessId) }
+                        ?.takeIf { call.canSeeProcess(manager, it) }
                     if (process == null) {
                         call.respond(HttpStatusCode.NotFound, ErrorResponse("Processo não encontrado."))
                         return@get
@@ -355,7 +427,7 @@ fun Application.configureRouting() {
                 }
 
                 put("/{id}") {
-                    val supabaseUser = call.requireSupabaseUser(authClient) ?: return@put
+                    val manager = call.requireEditor(authClient, managerRepository) ?: return@put
                     val id = call.parameters["id"]?.let(::runCatchingUuid)
                     if (id == null) {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
@@ -374,11 +446,6 @@ fun Application.configureRouting() {
                         return@put
                     }
 
-                    val manager = managerRepository.findOrCreateForSupabaseUser(
-                        supabaseUser.id,
-                        supabaseUser.email,
-                        supabaseUser.fullNameHint,
-                    )
                     val visible = processRepository.findById(id)?.let { call.companyScope(manager).sees(it.businessId) } ?: false
                     if (!visible) {
                         call.respond(HttpStatusCode.NotFound, ErrorResponse("Processo não encontrado."))
@@ -403,7 +470,7 @@ fun Application.configureRouting() {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
                         return@patch
                     }
-                    if (call.requireProcess(authClient, managerRepository, processRepository, id) == null) {
+                    if (call.requireProcess(authClient, managerRepository, processRepository, id, edit = true) == null) {
                         return@patch
                     }
 
@@ -586,23 +653,35 @@ fun Application.configureRouting() {
                 get {
                     val user = call.requireSupabaseUser(authClient) ?: return@get
                     val manager = managerRepository.findOrCreateForSupabaseUser(user.id, user.email, user.fullNameHint)
-                    call.respond(maintenanceRepository.listEquipment(call.companyScope(manager).visibleBusinesses))
+                    val hidden = if (manager.role in ManagerRecord.HIDEABLE_ROLES) {
+                        visibilityRepository.hiddenIdsSafe("equipment", manager.role).map { it.toString() }.toSet()
+                    } else {
+                        emptySet()
+                    }
+                    call.respond(
+                        maintenanceRepository.listEquipment(call.companyScope(manager).visibleBusinesses)
+                            .filter { it.id !in hidden },
+                    )
                 }
                 post {
-                    val user = call.requireSupabaseUser(authClient) ?: return@post
-                    val manager = managerRepository.findOrCreateForSupabaseUser(user.id, user.email, user.fullNameHint)
+                    val manager = call.requireEditor(authClient, managerRepository) ?: return@post
                     val body = call.receive<EquipmentRequest>()
                     if (body.name.isBlank()) { call.respond(HttpStatusCode.BadRequest, ErrorResponse("Nome do equipamento é obrigatório.")); return@post }
                     call.respond(HttpStatusCode.Created, maintenanceRepository.createEquipment(manager.id, call.companyScope(manager).businessId, body))
                 }
                 get("/{id}") {
-                    call.requireSupabaseUser(authClient) ?: return@get
+                    val user = call.requireSupabaseUser(authClient) ?: return@get
+                    val manager = managerRepository.findOrCreateForSupabaseUser(user.id, user.email, user.fullNameHint)
                     val id = call.parameters["id"]?.let(::runCatchingUuid)
+                        ?.takeUnless {
+                            manager.role in ManagerRecord.HIDEABLE_ROLES &&
+                                visibilityRepository.isHiddenSafe("equipment", it, manager.role)
+                        }
                     val item = id?.let(maintenanceRepository::findEquipment)
                     if (item == null) call.respond(HttpStatusCode.NotFound, ErrorResponse("Equipamento não encontrado.")) else call.respond(item)
                 }
                 put("/{id}") {
-                    call.requireSupabaseUser(authClient) ?: return@put
+                    call.requireEditor(authClient, managerRepository) ?: return@put
                     val id = call.parameters["id"]?.let(::runCatchingUuid)
                     val body = call.receive<EquipmentRequest>()
                     if (id == null || body.name.isBlank()) { call.respond(HttpStatusCode.BadRequest, ErrorResponse("Equipamento ou nome inválido.")); return@put }
@@ -622,7 +701,7 @@ fun Application.configureRouting() {
                     else call.respond(maintenanceRepository.listParametersForEquipment(equipmentId))
                 }
                 post("/{id}/parameters") {
-                    call.requireSupabaseUser(authClient) ?: return@post
+                    call.requireEditor(authClient, managerRepository) ?: return@post
                     val equipmentId = call.parameters["id"]?.let(::runCatchingUuid)
                     val body = call.receive<EquipmentParameterRequest>()
                     val monitoringId = equipmentId?.let(maintenanceRepository::firstMonitoringForEquipment)
@@ -640,7 +719,7 @@ fun Application.configureRouting() {
                     else call.respond(HttpStatusCode.Created, created)
                 }
                 delete("/{id}/parameters/{parameterId}") {
-                    call.requireSupabaseUser(authClient) ?: return@delete
+                    call.requireEditor(authClient, managerRepository) ?: return@delete
                     val equipmentId = call.parameters["id"]?.let(::runCatchingUuid)
                     val parameterId = call.parameters["parameterId"]?.let(::runCatchingUuid)
                     if (equipmentId == null || parameterId == null || !maintenanceRepository.deleteParameter(equipmentId, parameterId)) {
@@ -648,7 +727,7 @@ fun Application.configureRouting() {
                     } else call.respond(HttpStatusCode.NoContent)
                 }
                 post("/{id}/readings") {
-                    call.requireSupabaseUser(authClient) ?: return@post
+                    call.requireEditor(authClient, managerRepository) ?: return@post
                     val equipmentId = call.parameters["id"]?.let(::runCatchingUuid)
                     val upload = call.receiveUploadedFile()
                     val monitoringId = equipmentId?.let(maintenanceRepository::firstMonitoringForEquipment)
@@ -740,8 +819,7 @@ fun Application.configureRouting() {
                     call.respond(responses)
                 }
                 post("/{id}/analyses") {
-                    val user = call.requireSupabaseUser(authClient) ?: return@post
-                    val manager = managerRepository.findOrCreateForSupabaseUser(user.id, user.email, user.fullNameHint)
+                    val manager = call.requireEditor(authClient, managerRepository) ?: return@post
                     val equipmentId = call.parameters["id"]?.let(::runCatchingUuid)
                     val body = call.receive<RunEquipmentAnalysisRequest>()
                     val parameterId = runCatchingUuid(body.parameterId)
@@ -828,14 +906,14 @@ fun Application.configureRouting() {
                 put("/{equipmentId}") {
                     val processId = call.parameters["processId"]?.let(::runCatchingUuid)
                     val equipmentId = call.parameters["equipmentId"]?.let(::runCatchingUuid)
-                    if (processId == null || equipmentId == null || call.requireProcess(authClient, managerRepository, processRepository, processId) == null) return@put
+                    if (processId == null || equipmentId == null || call.requireProcess(authClient, managerRepository, processRepository, processId, edit = true) == null) return@put
                     if (!maintenanceRepository.linkProcessEquipment(processId, equipmentId)) call.respond(HttpStatusCode.NotFound, ErrorResponse("Equipamento não encontrado."))
                     else call.respond(HttpStatusCode.NoContent)
                 }
                 delete("/{equipmentId}") {
                     val processId = call.parameters["processId"]?.let(::runCatchingUuid)
                     val equipmentId = call.parameters["equipmentId"]?.let(::runCatchingUuid)
-                    if (processId == null || equipmentId == null || call.requireProcess(authClient, managerRepository, processRepository, processId) == null) return@delete
+                    if (processId == null || equipmentId == null || call.requireProcess(authClient, managerRepository, processRepository, processId, edit = true) == null) return@delete
                     if (!maintenanceRepository.unlinkProcessEquipment(processId, equipmentId)) call.respond(HttpStatusCode.NotFound, ErrorResponse("Associação não encontrada."))
                     else call.respond(HttpStatusCode.NoContent)
                 }
@@ -844,17 +922,16 @@ fun Application.configureRouting() {
             route("/monitorings") {
                 get { val u = call.requireSupabaseUser(authClient) ?: return@get; val m = managerRepository.findOrCreateForSupabaseUser(u.id,u.email,u.fullNameHint); call.respond(maintenanceRepository.listMonitorings(call.companyScope(m).visibleBusinesses)) }
                 post {
-                    val u = call.requireSupabaseUser(authClient) ?: return@post; val m = managerRepository.findOrCreateForSupabaseUser(u.id,u.email,u.fullNameHint)
+                    val m = call.requireEditor(authClient, managerRepository) ?: return@post
                     val body = call.receive<CreateMonitoringRequest>().toMonitoringRequest()
                     call.respond(HttpStatusCode.Created, maintenanceRepository.createMonitoring(m.id, call.companyScope(m).businessId, body))
                 }
                 get("/{id}") { call.requireSupabaseUser(authClient) ?: return@get; val item = call.parameters["id"]?.let(::runCatchingUuid)?.let(maintenanceRepository::findMonitoring); if(item==null) call.respond(HttpStatusCode.NotFound,ErrorResponse("Monitoramento não encontrado.")) else call.respond(item) }
-                put("/{id}") { call.requireSupabaseUser(authClient) ?: return@put; val id=call.parameters["id"]?.let(::runCatchingUuid); val body=call.receive<MonitoringRequest>(); val item=id?.let{maintenanceRepository.updateMonitoring(it,body)}; if(item==null) call.respond(HttpStatusCode.NotFound,ErrorResponse("Monitoramento não encontrado.")) else call.respond(item) }
-                delete("/{id}") { call.requireSupabaseUser(authClient) ?: return@delete; val id=call.parameters["id"]?.let(::runCatchingUuid); if(id==null||!maintenanceRepository.deleteMonitoring(id)) call.respond(HttpStatusCode.NotFound,ErrorResponse("Monitoramento não encontrado.")) else call.respond(HttpStatusCode.NoContent) }
+                put("/{id}") { call.requireEditor(authClient, managerRepository) ?: return@put; val id=call.parameters["id"]?.let(::runCatchingUuid); val body=call.receive<MonitoringRequest>(); val item=id?.let{maintenanceRepository.updateMonitoring(it,body)}; if(item==null) call.respond(HttpStatusCode.NotFound,ErrorResponse("Monitoramento não encontrado.")) else call.respond(item) }
+                delete("/{id}") { call.requireEditor(authClient, managerRepository) ?: return@delete; val id=call.parameters["id"]?.let(::runCatchingUuid); if(id==null||!maintenanceRepository.deleteMonitoring(id)) call.respond(HttpStatusCode.NotFound,ErrorResponse("Monitoramento não encontrado.")) else call.respond(HttpStatusCode.NoContent) }
                 get("/{id}/equipment") { call.requireSupabaseUser(authClient) ?: return@get; val id=call.parameters["id"]?.let(::runCatchingUuid); if(id==null) call.respond(HttpStatusCode.BadRequest,ErrorResponse("ID inválido.")) else call.respond(maintenanceRepository.listMonitoringEquipment(id)) }
                 post("/{id}/equipment") {
-                    val u=call.requireSupabaseUser(authClient)?:return@post
-                    val m=managerRepository.findOrCreateForSupabaseUser(u.id,u.email,u.fullNameHint)
+                    val m=call.requireEditor(authClient, managerRepository)?:return@post
                     val id=call.parameters["id"]?.let(::runCatchingUuid)
                     val body=call.receive<EquipmentRequest>()
                     if(id==null||body.name.isBlank()) { call.respond(HttpStatusCode.BadRequest,ErrorResponse("Monitoramento e nome do equipamento são obrigatórios.")); return@post }
@@ -863,11 +940,11 @@ fun Application.configureRouting() {
                     maintenanceRepository.linkMonitoringEquipment(id,java.util.UUID.fromString(equipment.id))
                     call.respond(HttpStatusCode.Created,equipment)
                 }
-                put("/{id}/equipment/{equipmentId}") { call.requireSupabaseUser(authClient) ?: return@put; val id=call.parameters["id"]?.let(::runCatchingUuid); val eid=call.parameters["equipmentId"]?.let(::runCatchingUuid); if(id==null||eid==null||!maintenanceRepository.linkMonitoringEquipment(id,eid)) call.respond(HttpStatusCode.NotFound,ErrorResponse("Monitoramento ou equipamento não encontrado.")) else call.respond(HttpStatusCode.NoContent) }
-                delete("/{id}/equipment/{equipmentId}") { call.requireSupabaseUser(authClient) ?: return@delete; val id=call.parameters["id"]?.let(::runCatchingUuid); val eid=call.parameters["equipmentId"]?.let(::runCatchingUuid); if(id==null||eid==null||!maintenanceRepository.unlinkMonitoringEquipment(id,eid)) call.respond(HttpStatusCode.NotFound,ErrorResponse("Associação não encontrada.")) else call.respond(HttpStatusCode.NoContent) }
+                put("/{id}/equipment/{equipmentId}") { call.requireEditor(authClient, managerRepository) ?: return@put; val id=call.parameters["id"]?.let(::runCatchingUuid); val eid=call.parameters["equipmentId"]?.let(::runCatchingUuid); if(id==null||eid==null||!maintenanceRepository.linkMonitoringEquipment(id,eid)) call.respond(HttpStatusCode.NotFound,ErrorResponse("Monitoramento ou equipamento não encontrado.")) else call.respond(HttpStatusCode.NoContent) }
+                delete("/{id}/equipment/{equipmentId}") { call.requireEditor(authClient, managerRepository) ?: return@delete; val id=call.parameters["id"]?.let(::runCatchingUuid); val eid=call.parameters["equipmentId"]?.let(::runCatchingUuid); if(id==null||eid==null||!maintenanceRepository.unlinkMonitoringEquipment(id,eid)) call.respond(HttpStatusCode.NotFound,ErrorResponse("Associação não encontrada.")) else call.respond(HttpStatusCode.NoContent) }
                 get("/{id}/parameters") { call.requireSupabaseUser(authClient) ?: return@get; val id=call.parameters["id"]?.let(::runCatchingUuid); if(id==null) call.respond(HttpStatusCode.BadRequest,ErrorResponse("ID inválido.")) else call.respond(maintenanceRepository.listParameters(id)) }
                 post("/{id}/parameters") {
-                    call.requireSupabaseUser(authClient) ?: return@post; val id=call.parameters["id"]?.let(::runCatchingUuid); val body=call.receive<MonitoringParameterRequest>()
+                    call.requireEditor(authClient, managerRepository) ?: return@post; val id=call.parameters["id"]?.let(::runCatchingUuid); val body=call.receive<MonitoringParameterRequest>()
                     if(id==null||body.name.isBlank()||runCatchingUuid(body.equipmentId)==null) { call.respond(HttpStatusCode.BadRequest,ErrorResponse("Monitoramento, equipamento ou parâmetro inválido.")); return@post }
                     val item=maintenanceRepository.createParameter(id,body); if(item==null) call.respond(HttpStatusCode.UnprocessableEntity,ErrorResponse("Associe o equipamento ao monitoramento antes de criar o parâmetro.")) else call.respond(HttpStatusCode.Created,item)
                 }
@@ -876,7 +953,7 @@ fun Application.configureRouting() {
             route("/monitoring-parameters/{id}/readings") {
                 get { call.requireSupabaseUser(authClient) ?: return@get; val id=call.parameters["id"]?.let(::runCatchingUuid); if(id==null) call.respond(HttpStatusCode.BadRequest,ErrorResponse("ID inválido.")) else call.respond(maintenanceRepository.listReadings(id)) }
                 post {
-                    call.requireSupabaseUser(authClient) ?: return@post; val id=call.parameters["id"]?.let(::runCatchingUuid); val body=call.receive<AppendReadingsRequest>()
+                    call.requireEditor(authClient, managerRepository) ?: return@post; val id=call.parameters["id"]?.let(::runCatchingUuid); val body=call.receive<AppendReadingsRequest>()
                     if(id==null||maintenanceRepository.findParameter(id)==null||body.readings.isEmpty()) { call.respond(HttpStatusCode.BadRequest,ErrorResponse("Parâmetro e leituras são obrigatórios.")); return@post }
                     val parsed=body.readings.mapNotNull { input -> runCatching { input to OffsetDateTime.parse(input.observedAt) }.getOrNull() }
                     if(parsed.size!=body.readings.size||body.readings.any{!it.value.isFinite()}) { call.respond(HttpStatusCode.BadRequest,ErrorResponse("Leitura, data ou valor inválido.")); return@post }
@@ -891,7 +968,7 @@ fun Application.configureRouting() {
                     call.respond(EquipmentAnalysisResponse(stored.id.toString(),stored.equipmentId.toString(),stored.monitoringId.toString(),stored.parameterId.toString(),stored.monitoringAnalysisId?.toString(),stored.inputSha256,routeJson.decodeFromString(stored.resultJson),routeJson.decodeFromString(stored.provenanceJson),stored.rulValue,stored.rulUnit,stored.failureProbability,stored.failureHorizonValue,stored.failureHorizonUnit,stored.modelVersion,stored.recommendation,stored.createdAt.toString()))
                 }
                 post("/recommendations") {
-                    val u=call.requireSupabaseUser(authClient)?:return@post; val m=managerRepository.findOrCreateForSupabaseUser(u.id,u.email,u.fullNameHint); val id=call.parameters["id"]?.let(::runCatchingUuid); val stored=id?.let(maintenanceRepository::findAnalysis); val body=call.receive<RecommendationRequest>()
+                    val m=call.requireEditor(authClient, managerRepository)?:return@post; val id=call.parameters["id"]?.let(::runCatchingUuid); val stored=id?.let(maintenanceRepository::findAnalysis); val body=call.receive<RecommendationRequest>()
                     if(stored==null||body.action.isBlank()) { call.respond(HttpStatusCode.BadRequest,ErrorResponse("Análise e ação são obrigatórias.")); return@post }
                     call.respond(HttpStatusCode.Created,maintenanceRepository.createRecommendation(m.id,stored.equipmentId,stored.id,body)!!)
                 }
@@ -916,13 +993,13 @@ fun Application.configureRouting() {
                     call.respond(maintenanceRepository.listSchedules(equipmentId, call.companyScope(m).visibleBusinesses))
                 }
                 post {
-                    val u=call.requireSupabaseUser(authClient)?:return@post; val m=managerRepository.findOrCreateForSupabaseUser(u.id,u.email,u.fullNameHint); val body=call.receive<MaintenanceScheduleRequest>()
+                    val m=call.requireEditor(authClient, managerRepository)?:return@post; val body=call.receive<MaintenanceScheduleRequest>()
                     val start=runCatching{OffsetDateTime.parse(body.scheduledStart)}.getOrNull(); val end=body.scheduledEnd?.let{runCatching{OffsetDateTime.parse(it)}.getOrNull()}
                     if(body.title.isBlank()||start==null||(body.scheduledEnd!=null&&end==null)||(end!=null&&end<start)) { call.respond(HttpStatusCode.BadRequest,ErrorResponse("Agenda de manutenção inválida.")); return@post }
                     val item=runCatching{maintenanceRepository.createSchedule(m.id,body)}.getOrNull(); if(item==null) call.respond(HttpStatusCode.UnprocessableEntity,ErrorResponse("Referências da agenda inválidas.")) else call.respond(HttpStatusCode.Created,item)
                 }
                 put("/{id}") {
-                    call.requireSupabaseUser(authClient) ?: return@put
+                    call.requireEditor(authClient, managerRepository) ?: return@put
                     val id = call.parameters["id"]?.let(::runCatchingUuid)
                     val body = call.receive<MaintenanceScheduleRequest>()
                     val start = runCatching { OffsetDateTime.parse(body.scheduledStart) }.getOrNull()
@@ -932,6 +1009,31 @@ fun Application.configureRouting() {
                         return@put
                     }
                     val item = runCatching { maintenanceRepository.updateSchedule(id, body) }.getOrNull()
+                    if (item == null) call.respond(HttpStatusCode.NotFound, ErrorResponse("Agenda não encontrada.")) else call.respond(item)
+                }
+                // O técnico registra o andamento da manutenção; quem edita também.
+                patch("/{id}/status") {
+                    val u = call.requireSupabaseUser(authClient) ?: return@patch
+                    val m = managerRepository.findOrCreateForSupabaseUser(u.id, u.email, u.fullNameHint)
+                    if (!m.canEdit() && !m.isTechnician()) {
+                        call.respond(HttpStatusCode.Forbidden, ErrorResponse(EDIT_FORBIDDEN))
+                        return@patch
+                    }
+                    val id = call.parameters["id"]?.let(::runCatchingUuid)
+                    val owner = id?.let(maintenanceRepository::scheduleBusiness)
+                    if (id == null || owner == null || !call.companyScope(m).sees(owner.businessId)) {
+                        call.respond(HttpStatusCode.NotFound, ErrorResponse("Agenda não encontrada."))
+                        return@patch
+                    }
+                    val body = call.receive<ScheduleStatusRequest>()
+                    if (body.status !in SCHEDULE_STATUSES) {
+                        call.respond(
+                            HttpStatusCode.BadRequest,
+                            ErrorResponse("Situação inválida: use ${SCHEDULE_STATUSES.joinToString(", ")}."),
+                        )
+                        return@patch
+                    }
+                    val item = maintenanceRepository.updateScheduleStatus(id, body.status, body.notes)
                     if (item == null) call.respond(HttpStatusCode.NotFound, ErrorResponse("Agenda não encontrada.")) else call.respond(item)
                 }
                 delete("/{id}") { call.requireDeleter(authClient, managerRepository)?:return@delete; val id=call.parameters["id"]?.let(::runCatchingUuid); if(id==null||!maintenanceRepository.deleteSchedule(id)) call.respond(HttpStatusCode.NotFound,ErrorResponse("Agenda não encontrada.")) else call.respond(HttpStatusCode.NoContent) }
@@ -969,7 +1071,7 @@ fun Application.configureRouting() {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de atividade inválido."))
                         return@put
                     }
-                    val process = call.requireProcess(authClient, managerRepository, processRepository, processId)
+                    val process = call.requireProcess(authClient, managerRepository, processRepository, processId, edit = true)
                         ?: return@put
 
                     // Só vincula atividade do catálogo da empresa dona do processo.
@@ -995,7 +1097,7 @@ fun Application.configureRouting() {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de atividade inválido."))
                         return@delete
                     }
-                    if (call.requireProcess(authClient, managerRepository, processRepository, processId) == null) {
+                    if (call.requireProcess(authClient, managerRepository, processRepository, processId, edit = true) == null) {
                         return@delete
                     }
 
@@ -1032,13 +1134,14 @@ fun Application.configureRouting() {
              */
             route("/processes/{processId}/operations/{id}") {
                 suspend fun ApplicationCall.processOperation(): Pair<ProcessRecord, UUID>? {
+                    // Mapear e desmapear altera o processo: só quem edita.
                     val processId = parameters["processId"]?.let(::runCatchingUuid)
                     val id = parameters["id"]?.let(::runCatchingUuid)
                     if (processId == null || id == null) {
                         respond(HttpStatusCode.BadRequest, ErrorResponse("ID inválido."))
                         return null
                     }
-                    val process = requireProcess(authClient, managerRepository, processRepository, processId) ?: return null
+                    val process = requireProcess(authClient, managerRepository, processRepository, processId, edit = true) ?: return null
                     val logIds = eventLogsRepository.findByProcessId(processId).map { it.id }.toSet()
                     if (operationsRepository.findById(id)?.eventLogId !in logIds) {
                         respond(HttpStatusCode.NotFound, ErrorResponse("Operação não encontrada."))
@@ -1143,7 +1246,7 @@ fun Application.configureRouting() {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
                         return@post
                     }
-                    val process = call.requireProcess(authClient, managerRepository, processRepository, processId)
+                    val process = call.requireProcess(authClient, managerRepository, processRepository, processId, edit = true)
                         ?: return@post
 
                     val analysisId = call.request.queryParameters["analysisId"]?.let(::runCatchingUuid)
@@ -1361,19 +1464,14 @@ fun Application.configureRouting() {
                 }
 
                 post {
-                    val supabaseUser = call.requireSupabaseUser(authClient) ?: return@post
-                    managerRepository.findOrCreateForSupabaseUser(
-                        supabaseUser.id,
-                        supabaseUser.email,
-                        supabaseUser.fullNameHint,
-                    )
+                    call.requireEditor(authClient, managerRepository) ?: return@post
                     val body = call.receive<CreateAnalysisRequest>()
                     val processId = runCatchingUuid(body.processId)
                     if (processId == null) {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
                         return@post
                     }
-                    val process = call.requireProcess(authClient, managerRepository, processRepository, processId)
+                    val process = call.requireProcess(authClient, managerRepository, processRepository, processId, edit = true)
                         ?: return@post
                     val stub = analysisRepository.createStub(
                         processId = processId,
@@ -1425,12 +1523,7 @@ fun Application.configureRouting() {
                 // Persist the Manager's subtractive filter so reopening an
                 // analysis continues where they left off, without recomputing.
                 put("/{id}/filter") {
-                    val supabaseUser = call.requireSupabaseUser(authClient) ?: return@put
-                    managerRepository.findOrCreateForSupabaseUser(
-                        supabaseUser.id,
-                        supabaseUser.email,
-                        supabaseUser.fullNameHint,
-                    )
+                    call.requireEditor(authClient, managerRepository) ?: return@put
                     val id = call.parameters["id"]?.let(::runCatchingUuid)
                     if (id == null) {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de análise inválido."))
@@ -1546,7 +1639,7 @@ fun Application.configureRouting() {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
                         return@post
                     }
-                    if (call.requireProcess(authClient, managerRepository, processRepository, processId) == null) {
+                    if (call.requireProcess(authClient, managerRepository, processRepository, processId, edit = true) == null) {
                         return@post
                     }
 
@@ -1622,10 +1715,10 @@ fun Application.configureRouting() {
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
                         return@post
                     }
-                    val process = call.requireProcess(authClient, managerRepository, processRepository, processId)
+                    val access = call.requireProcessAccess(authClient, managerRepository, processRepository, processId, edit = true)
                         ?: return@post
-                    val user = call.requireSupabaseUser(authClient) ?: return@post
-                    val manager = managerRepository.findOrCreateForSupabaseUser(user.id, user.email, user.fullNameHint)
+                    val process = access.process
+                    val manager = access.manager
 
                     val body = call.receive<ResolveMappingRequest>()
                     if (body.mappings.isEmpty()) {
@@ -1672,6 +1765,162 @@ fun Application.configureRouting() {
                             operations = result.operations.map { it.toResponse(activityNames[it.activityId]) },
                         ),
                     )
+                }
+            }
+
+            /** Anotações sobre traces do processo: leem todos que veem o processo. */
+            route("/processes/{processId}/trace-notes") {
+                get {
+                    val processId = call.parameters["processId"]?.let(::runCatchingUuid)
+                    if (processId == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
+                        return@get
+                    }
+                    call.requireProcess(authClient, managerRepository, processRepository, processId) ?: return@get
+                    val notes = try {
+                        traceNotesRepository.list(processId)
+                    } catch (e: Exception) {
+                        call.respondTableMissing(e)
+                        return@get
+                    }
+                    call.respond(notes)
+                }
+
+                post {
+                    val processId = call.parameters["processId"]?.let(::runCatchingUuid)
+                    if (processId == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID de processo inválido."))
+                        return@post
+                    }
+                    val user = call.requireSupabaseUser(authClient) ?: return@post
+                    val author = managerRepository.findOrCreateForSupabaseUser(user.id, user.email, user.fullNameHint)
+                    if (!author.writesTraceNotes()) {
+                        call.respond(HttpStatusCode.Forbidden, ErrorResponse(EDIT_FORBIDDEN))
+                        return@post
+                    }
+                    val access = call.requireProcessAccess(authClient, managerRepository, processRepository, processId)
+                        ?: return@post
+                    val body = call.receive<CreateTraceNoteRequest>()
+                    val error = traceNoteError(body.note, body.activityName)
+                    if (error != null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse(error, mapOf("note" to error)))
+                        return@post
+                    }
+                    val traceId = runCatchingUuid(body.traceId)
+                    val caseId = traceId?.let { traceNotesRepository.caseIdForProcessTrace(processId, it) }
+                    if (traceId == null || caseId == null) {
+                        call.respond(HttpStatusCode.NotFound, ErrorResponse("Trace não encontrado neste processo."))
+                        return@post
+                    }
+                    val created = try {
+                        val id = traceNotesRepository.create(
+                            processId = processId,
+                            traceId = traceId,
+                            activityName = body.activityName.trim(),
+                            note = body.note.trim(),
+                            managerId = access.manager.id,
+                            businessId = access.process.businessId,
+                        )
+                        traceNotesRepository.list(processId).first { it.id == id.toString() }
+                    } catch (e: Exception) {
+                        call.respondTableMissing(e)
+                        return@post
+                    }
+                    call.respond(HttpStatusCode.Created, created)
+                }
+
+                delete("/{id}") {
+                    val processId = call.parameters["processId"]?.let(::runCatchingUuid)
+                    val id = call.parameters["id"]?.let(::runCatchingUuid)
+                    if (processId == null || id == null) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse("ID inválido."))
+                        return@delete
+                    }
+                    val access = call.requireProcessAccess(authClient, managerRepository, processRepository, processId)
+                        ?: return@delete
+                    val note = try {
+                        traceNotesRepository.find(processId, id)
+                    } catch (e: Exception) {
+                        call.respondTableMissing(e)
+                        return@delete
+                    }
+                    if (note == null) {
+                        call.respond(HttpStatusCode.NotFound, ErrorResponse("Anotação não encontrada."))
+                        return@delete
+                    }
+                    if (note.managerId != access.manager.id && !access.manager.canEdit()) {
+                        call.respond(HttpStatusCode.Forbidden, ErrorResponse(EDIT_FORBIDDEN))
+                        return@delete
+                    }
+                    try {
+                        traceNotesRepository.delete(id)
+                    } catch (e: Exception) {
+                        call.respondTableMissing(e)
+                        return@delete
+                    }
+                    call.respond(HttpStatusCode.NoContent)
+                }
+            }
+
+            /** Processo ou máquina oculto para operador e/ou técnico. */
+            route("/visibility/{objectType}/{objectId}") {
+                // Empresa dona do objeto, se ele existe e está no escopo do usuário.
+                fun ApplicationCall.objectBusiness(manager: ManagerRecord, objectType: String, objectId: UUID): UUID? {
+                    val businessId = when (objectType) {
+                        "process" -> processRepository.findById(objectId)?.businessId
+                        "equipment" -> maintenanceRepository.equipmentBusinessId(objectId)
+                        else -> null
+                    }
+                    return businessId?.takeIf { companyScope(manager).sees(it) }
+                }
+
+                suspend fun ApplicationCall.visibilityTarget(manager: ManagerRecord): Triple<String, UUID, UUID>? {
+                    val objectType = parameters["objectType"].orEmpty()
+                    val objectId = parameters["objectId"]?.let(::runCatchingUuid)
+                    if (objectType !in VISIBILITY_OBJECT_TYPES || objectId == null) {
+                        respond(HttpStatusCode.BadRequest, ErrorResponse("Use process ou equipment e um ID válido."))
+                        return null
+                    }
+                    val businessId = objectBusiness(manager, objectType, objectId)
+                    if (businessId == null) {
+                        respond(HttpStatusCode.NotFound, ErrorResponse("Objeto não encontrado."))
+                        return null
+                    }
+                    return Triple(objectType, objectId, businessId)
+                }
+
+                get {
+                    val user = call.requireSupabaseUser(authClient) ?: return@get
+                    val manager = managerRepository.findOrCreateForSupabaseUser(user.id, user.email, user.fullNameHint)
+                    val (objectType, objectId, _) = call.visibilityTarget(manager) ?: return@get
+                    val roles = try {
+                        visibilityRepository.hiddenRoles(objectType, objectId)
+                    } catch (e: Exception) {
+                        call.respondTableMissing(e)
+                        return@get
+                    }
+                    call.respond(VisibilityResponse(objectType, objectId.toString(), roles))
+                }
+
+                put {
+                    val manager = call.requireEditor(authClient, managerRepository) ?: return@put
+                    val (objectType, objectId, businessId) = call.visibilityTarget(manager) ?: return@put
+                    val body = call.receive<VisibilityRequest>()
+                    val invalid = body.hiddenRoles.filter { it !in ManagerRecord.HIDEABLE_ROLES }
+                    if (invalid.isNotEmpty()) {
+                        call.respond(
+                            HttpStatusCode.BadRequest,
+                            ErrorResponse("Só é possível ocultar para operator ou technician."),
+                        )
+                        return@put
+                    }
+                    val roles = try {
+                        visibilityRepository.replace(businessId, objectType, objectId, body.hiddenRoles.toSet(), manager.id)
+                    } catch (e: Exception) {
+                        call.respondTableMissing(e)
+                        return@put
+                    }
+                    call.respond(VisibilityResponse(objectType, objectId.toString(), roles))
                 }
             }
 
